@@ -19,12 +19,6 @@ namespace Papyrus {
     float GetStaggerMagnitude(RE::StaticFunctionTag*);
     void SetStaggerMagnitude(RE::StaticFunctionTag*, float value);
     
-    // ===== Pushback Settings =====
-    bool GetEnablePushback(RE::StaticFunctionTag*);
-    void SetEnablePushback(RE::StaticFunctionTag*, bool value);
-    float GetPushbackMagnitude(RE::StaticFunctionTag*);
-    void SetPushbackMagnitude(RE::StaticFunctionTag*, float value);
-    
     // ===== Camera Shake Settings =====
     bool GetEnableCameraShake(RE::StaticFunctionTag*);
     void SetEnableCameraShake(RE::StaticFunctionTag*, bool value);

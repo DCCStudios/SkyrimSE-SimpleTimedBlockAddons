@@ -33,3 +33,13 @@ Function SaveSettings() Global Native
 Function ReloadSettings() Global Native
 
 
+
+
+
+
+
+
+
+
+
+

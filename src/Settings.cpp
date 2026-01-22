@@ -33,59 +33,131 @@ void Settings::LoadSettings() {
     // Load Stagger settings
     bEnableStagger = ini.GetBoolValue("Stagger", "bEnableStagger", true);
     fStaggerMagnitude = static_cast<float>(ini.GetDoubleValue("Stagger", "fStaggerMagnitude", 0.7));
+    fPowerAttackStaggerMagnitude = static_cast<float>(ini.GetDoubleValue("Stagger", "fPowerAttackStaggerMagnitude", 1.0));
     
-    // Load Pushback settings
-    bEnablePushback = ini.GetBoolValue("Pushback", "bEnablePushback", false);
-    fPushbackMagnitude = static_cast<float>(ini.GetDoubleValue("Pushback", "fPushbackMagnitude", 1.5));
+    // Load skill-based stagger chance settings
+    bUseStaggerChance = ini.GetBoolValue("Stagger", "bUseStaggerChance", false);
+    fBaseStaggerChance = static_cast<float>(ini.GetDoubleValue("Stagger", "fBaseStaggerChance", 50.0));
+    fMaxStaggerChance = static_cast<float>(ini.GetDoubleValue("Stagger", "fMaxStaggerChance", 100.0));
+    bStaggerUseBlockSkill = ini.GetBoolValue("Stagger", "bStaggerUseBlockSkill", true);
+    bStaggerUseWeaponSkill = ini.GetBoolValue("Stagger", "bStaggerUseWeaponSkill", false);
     
     // Load Camera Shake settings
     bEnableCameraShake = ini.GetBoolValue("CameraShake", "bEnableCameraShake", true);
     fCameraShakeStrength = static_cast<float>(ini.GetDoubleValue("CameraShake", "fCameraShakeStrength", 0.5));
     fCameraShakeDuration = static_cast<float>(ini.GetDoubleValue("CameraShake", "fCameraShakeDuration", 0.2));
     
+    // Load Stamina Restoration settings
+    bEnableStaminaRestore = ini.GetBoolValue("StaminaRestore", "bEnableStaminaRestore", true);
+    fStaminaRestorePercent = static_cast<float>(ini.GetDoubleValue("StaminaRestore", "fStaminaRestorePercent", 100.0));
+    
     // Load Sound settings
     bEnableSound = ini.GetBoolValue("Sound", "bEnableSound", true);
     sSoundPath = ini.GetValue("Sound", "sSoundPath", "UIMenuOK");
+    bUseCustomWav = ini.GetBoolValue("Sound", "bUseCustomWav", false);
+    fCustomWavVolume = static_cast<float>(ini.GetDoubleValue("Sound", "fCustomWavVolume", 1.0));
+    
+    // Load Slowmo settings
+    bEnableSlowmo = ini.GetBoolValue("Slowmo", "bEnableSlowmo", false);
+    fSlowmoSpeed = static_cast<float>(ini.GetDoubleValue("Slowmo", "fSlowmoSpeed", 0.25));
+    fSlowmoDuration = static_cast<float>(ini.GetDoubleValue("Slowmo", "fSlowmoDuration", 0.75));
+    
+    // Load Counter Attack settings
+    bEnableCounterAttack = ini.GetBoolValue("CounterAttack", "bEnableCounterAttack", false);
+    fCounterAttackWindow = static_cast<float>(ini.GetDoubleValue("CounterAttack", "fCounterAttackWindow", 0.5));
+    bPreventPlayerStagger = ini.GetBoolValue("CounterAttack", "bPreventPlayerStagger", true);
+    
+    // Load Counter Damage Bonus settings
+    bEnableCounterDamageBonus = ini.GetBoolValue("CounterDamage", "bEnableCounterDamageBonus", false);
+    fCounterDamageBonusPercent = static_cast<float>(ini.GetDoubleValue("CounterDamage", "fCounterDamageBonusPercent", 50.0));
+    fCounterDamageBonusTimeout = static_cast<float>(ini.GetDoubleValue("CounterDamage", "fCounterDamageBonusTimeout", 1.0));
+    
+    // Load Counter Strike Sound settings
+    bEnableCounterStrikeSound = ini.GetBoolValue("CounterDamage", "bEnableCounterStrikeSound", true);
+    fCounterStrikeSoundVolume = static_cast<float>(ini.GetDoubleValue("CounterDamage", "fCounterStrikeSoundVolume", 1.0));
+    
+    // Load Counter Lunge settings
+    bEnableCounterLunge = ini.GetBoolValue("CounterLunge", "bEnableCounterLunge", false);
+    fCounterLungeDistance = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeDistance", 150.0));
+    fCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeSpeed", 800.0));
+    
+    // Load Counter Slow Time settings
+    bEnableCounterSlowTime = ini.GetBoolValue("CounterSlowTime", "bEnableCounterSlowTime", false);
+    fCounterSlowTimeScale = static_cast<float>(ini.GetDoubleValue("CounterSlowTime", "fCounterSlowTimeScale", 0.25));
+    fCounterSlowTimeMaxDuration = static_cast<float>(ini.GetDoubleValue("CounterSlowTime", "fCounterSlowTimeMaxDuration", 2.0));
+    bCounterSlowStartAfterLunge = ini.GetBoolValue("CounterSlowTime", "bCounterSlowStartAfterLunge", false);
+    sCounterSlowStartEvent = ini.GetValue("CounterSlowTime", "sCounterSlowStartEvent", "attackStart");
+    sCounterSlowEndEvent = ini.GetValue("CounterSlowTime", "sCounterSlowEndEvent", "weaponSwing");
+    
+    // Load Parry Window settings (try ParryWindow section first, then root for compatibility)
+    // Original mod default taper duration is 0.33s = 330ms
+    fParryWindowDurationMs = static_cast<float>(ini.GetDoubleValue("ParryWindow", "fParryWindowDurationMs", 
+        ini.GetDoubleValue("", "fParryWindowDurationMs", 330.0)));
     
     // Load Cooldown settings
     bEnableCooldown = ini.GetBoolValue("Cooldown", "bEnableCooldown", true);
     fCooldownDurationMs = static_cast<float>(ini.GetDoubleValue("Cooldown", "fCooldownDurationMs", 250.0));
+    bIgnoreCooldownOutsideRange = ini.GetBoolValue("Cooldown", "bIgnoreCooldownOutsideRange", false);
+    fCooldownIgnoreDistance = static_cast<float>(ini.GetDoubleValue("Cooldown", "fCooldownIgnoreDistance", 512.0));
     
     // Debug logging
     bDebugLogging = ini.GetBoolValue("Log", "Debug", false);
     
     if (bDebugLogging) {
         spdlog::set_level(spdlog::level::debug);
-        logger::debug("Debug logging enabled");
+        spdlog::flush_on(spdlog::level::debug);  // Flush on debug too
+        logger::info("=== DEBUG LOGGING ENABLED ===");
+    } else {
+        spdlog::set_level(spdlog::level::info);
+        spdlog::flush_on(spdlog::level::info);
     }
     
     // Clamp values
+    fParryWindowDurationMs = std::clamp(fParryWindowDurationMs, 50.0f, 1000.0f);
     fCooldownDurationMs = std::clamp(fCooldownDurationMs, 0.0f, 1000.0f);
     
     logger::info("Settings loaded successfully");
+    logger::info("  ParryWindow: {}ms", fParryWindowDurationMs);
     logger::info("  Hitstop: {} (speed={}, duration={}s)", bEnableHitstop, fHitstopSpeed, fHitstopDuration);
-    logger::info("  Stagger: {} (magnitude={})", bEnableStagger, fStaggerMagnitude);
-    logger::info("  Pushback: {} (magnitude={})", bEnablePushback, fPushbackMagnitude);
+    logger::info("  Stagger: {} (normal={}, power={})", bEnableStagger, fStaggerMagnitude, fPowerAttackStaggerMagnitude);
     logger::info("  CameraShake: {} (strength={}, duration={}s)", bEnableCameraShake, fCameraShakeStrength, fCameraShakeDuration);
-    logger::info("  Sound: {} ({})", bEnableSound, sSoundPath);
-    logger::info("  Cooldown: {} (duration={}ms)", bEnableCooldown, fCooldownDurationMs);
+    logger::info("  Sound: {} (customWav={}, volume={}%, path={})", bEnableSound, bUseCustomWav, fCustomWavVolume * 100.0f, sSoundPath);
+    logger::info("  Slowmo: {} (speed={}, duration={}s)", bEnableSlowmo, fSlowmoSpeed, fSlowmoDuration);
+    logger::info("  CounterAttack: {} (window={}s, preventStagger={})", bEnableCounterAttack, fCounterAttackWindow, bPreventPlayerStagger);
+    logger::info("  CounterDamage: {} (bonus={}%, timeout={}s)", bEnableCounterDamageBonus, fCounterDamageBonusPercent, fCounterDamageBonusTimeout);
+    logger::info("  CounterLunge: {} (distance={}, speed={})", bEnableCounterLunge, fCounterLungeDistance, fCounterLungeSpeed);
+    logger::info("  CounterSlowTime: {} (scale={}, maxDuration={}s, start='{}', end='{}')", 
+        bEnableCounterSlowTime, fCounterSlowTimeScale, fCounterSlowTimeMaxDuration, sCounterSlowStartEvent, sCounterSlowEndEvent);
+    logger::info("  Cooldown: {} (duration={}ms, ignoreOutsideRange={}, distance={})", 
+        bEnableCooldown, fCooldownDurationMs, bIgnoreCooldownOutsideRange, fCooldownIgnoreDistance);
+    logger::info("  Debug: {}", bDebugLogging);
 }
 
 void Settings::SaveSettings() {
-    logger::info("Saving settings...");
+    logger::info("Saving settings to: {}", INI_PATH);
+    
+    // Log current values being saved
+    logger::info("  Saving - Sound: enabled={}, customWav={}, path={}", bEnableSound, bUseCustomWav, sSoundPath);
+    logger::info("  Saving - Slowmo: enabled={}, speed={}, duration={}", bEnableSlowmo, fSlowmoSpeed, fSlowmoDuration);
+    logger::info("  Saving - Cooldown: enabled={}, duration={}ms, ignoreRange={}, distance={}", 
+        bEnableCooldown, fCooldownDurationMs, bIgnoreCooldownOutsideRange, fCooldownIgnoreDistance);
     
     CSimpleIniA ini;
     ini.SetUnicode();
     
     // Load existing settings first to preserve them
-    ini.LoadFile(INI_PATH);
+    SI_Error loadRc = ini.LoadFile(INI_PATH);
+    if (loadRc < 0) {
+        logger::info("INI file doesn't exist yet, will create new one");
+    }
     
-    // Save original settings
+    // Save original settings (root section - for SimpleTimedBlock.esp compatibility)
     ini.SetValue("", "sBlockKey", sBlockKey.c_str());
     ini.SetDoubleValue("", "fStaggerDistance", fStaggerDistance);
     ini.SetBoolValue("", "bPerkLockedBlock", bPerkLockedBlock);
     ini.SetBoolValue("", "bOnlyWithShield", bOnlyWithShield);
     ini.SetBoolValue("", "bPerkLockedStagger", bPerkLockedStagger);
+    ini.SetDoubleValue("", "fParryWindowDurationMs", fParryWindowDurationMs);  // Also save to root for original mod
     
     // Save Hitstop settings
     ini.SetBoolValue("Hitstop", "bEnableHitstop", bEnableHitstop);
@@ -95,23 +167,70 @@ void Settings::SaveSettings() {
     // Save Stagger settings
     ini.SetBoolValue("Stagger", "bEnableStagger", bEnableStagger);
     ini.SetDoubleValue("Stagger", "fStaggerMagnitude", fStaggerMagnitude);
+    ini.SetDoubleValue("Stagger", "fPowerAttackStaggerMagnitude", fPowerAttackStaggerMagnitude);
     
-    // Save Pushback settings
-    ini.SetBoolValue("Pushback", "bEnablePushback", bEnablePushback);
-    ini.SetDoubleValue("Pushback", "fPushbackMagnitude", fPushbackMagnitude);
+    // Save skill-based stagger chance settings
+    ini.SetBoolValue("Stagger", "bUseStaggerChance", bUseStaggerChance);
+    ini.SetDoubleValue("Stagger", "fBaseStaggerChance", fBaseStaggerChance);
+    ini.SetDoubleValue("Stagger", "fMaxStaggerChance", fMaxStaggerChance);
+    ini.SetBoolValue("Stagger", "bStaggerUseBlockSkill", bStaggerUseBlockSkill);
+    ini.SetBoolValue("Stagger", "bStaggerUseWeaponSkill", bStaggerUseWeaponSkill);
     
     // Save Camera Shake settings
     ini.SetBoolValue("CameraShake", "bEnableCameraShake", bEnableCameraShake);
     ini.SetDoubleValue("CameraShake", "fCameraShakeStrength", fCameraShakeStrength);
     ini.SetDoubleValue("CameraShake", "fCameraShakeDuration", fCameraShakeDuration);
     
+    // Save Stamina Restoration settings
+    ini.SetBoolValue("StaminaRestore", "bEnableStaminaRestore", bEnableStaminaRestore);
+    ini.SetDoubleValue("StaminaRestore", "fStaminaRestorePercent", fStaminaRestorePercent);
+    
     // Save Sound settings
     ini.SetBoolValue("Sound", "bEnableSound", bEnableSound);
     ini.SetValue("Sound", "sSoundPath", sSoundPath.c_str());
+    ini.SetBoolValue("Sound", "bUseCustomWav", bUseCustomWav);
+    ini.SetDoubleValue("Sound", "fCustomWavVolume", fCustomWavVolume);
+    
+    // Save Slowmo settings
+    ini.SetBoolValue("Slowmo", "bEnableSlowmo", bEnableSlowmo);
+    ini.SetDoubleValue("Slowmo", "fSlowmoSpeed", fSlowmoSpeed);
+    ini.SetDoubleValue("Slowmo", "fSlowmoDuration", fSlowmoDuration);
+    
+    // Save Counter Attack settings
+    ini.SetBoolValue("CounterAttack", "bEnableCounterAttack", bEnableCounterAttack);
+    ini.SetDoubleValue("CounterAttack", "fCounterAttackWindow", fCounterAttackWindow);
+    ini.SetBoolValue("CounterAttack", "bPreventPlayerStagger", bPreventPlayerStagger);
+    
+    // Save Counter Damage Bonus settings
+    ini.SetBoolValue("CounterDamage", "bEnableCounterDamageBonus", bEnableCounterDamageBonus);
+    ini.SetDoubleValue("CounterDamage", "fCounterDamageBonusPercent", fCounterDamageBonusPercent);
+    ini.SetDoubleValue("CounterDamage", "fCounterDamageBonusTimeout", fCounterDamageBonusTimeout);
+    
+    // Save Counter Strike Sound settings
+    ini.SetBoolValue("CounterDamage", "bEnableCounterStrikeSound", bEnableCounterStrikeSound);
+    ini.SetDoubleValue("CounterDamage", "fCounterStrikeSoundVolume", fCounterStrikeSoundVolume);
+    
+    // Save Counter Lunge settings
+    ini.SetBoolValue("CounterLunge", "bEnableCounterLunge", bEnableCounterLunge);
+    ini.SetDoubleValue("CounterLunge", "fCounterLungeDistance", fCounterLungeDistance);
+    ini.SetDoubleValue("CounterLunge", "fCounterLungeSpeed", fCounterLungeSpeed);
+    
+    // Save Counter Slow Time settings
+    ini.SetBoolValue("CounterSlowTime", "bEnableCounterSlowTime", bEnableCounterSlowTime);
+    ini.SetDoubleValue("CounterSlowTime", "fCounterSlowTimeScale", fCounterSlowTimeScale);
+    ini.SetDoubleValue("CounterSlowTime", "fCounterSlowTimeMaxDuration", fCounterSlowTimeMaxDuration);
+    ini.SetBoolValue("CounterSlowTime", "bCounterSlowStartAfterLunge", bCounterSlowStartAfterLunge);
+    ini.SetValue("CounterSlowTime", "sCounterSlowStartEvent", sCounterSlowStartEvent.c_str());
+    ini.SetValue("CounterSlowTime", "sCounterSlowEndEvent", sCounterSlowEndEvent.c_str());
+    
+    // Save Parry Window settings
+    ini.SetDoubleValue("ParryWindow", "fParryWindowDurationMs", fParryWindowDurationMs);
     
     // Save Cooldown settings
     ini.SetBoolValue("Cooldown", "bEnableCooldown", bEnableCooldown);
     ini.SetDoubleValue("Cooldown", "fCooldownDurationMs", fCooldownDurationMs);
+    ini.SetBoolValue("Cooldown", "bIgnoreCooldownOutsideRange", bIgnoreCooldownOutsideRange);
+    ini.SetDoubleValue("Cooldown", "fCooldownIgnoreDistance", fCooldownIgnoreDistance);
     
     // Save debug
     ini.SetBoolValue("Log", "Debug", bDebugLogging);
@@ -119,14 +238,18 @@ void Settings::SaveSettings() {
     // Preserve Forms section if it exists
     const char* perkModName = ini.GetValue("Forms", "PerkModName", "");
     const char* timedBlockPerk = ini.GetValue("Forms", "TimedBlockPerk", "");
-    ini.SetValue("Forms", "PerkModName", perkModName);
-    ini.SetValue("Forms", "TimedBlockPerk", timedBlockPerk);
+    if (perkModName && strlen(perkModName) > 0) {
+        ini.SetValue("Forms", "PerkModName", perkModName);
+    }
+    if (timedBlockPerk && strlen(timedBlockPerk) > 0) {
+        ini.SetValue("Forms", "TimedBlockPerk", timedBlockPerk);
+    }
     
     SI_Error rc = ini.SaveFile(INI_PATH);
     if (rc < 0) {
-        logger::error("Failed to save INI file!");
+        logger::error("Failed to save INI file! Error code: {}", static_cast<int>(rc));
         return;
     }
     
-    logger::info("Settings saved successfully");
+    logger::info("Settings saved successfully to {}", INI_PATH);
 }

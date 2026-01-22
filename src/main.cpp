@@ -10,6 +10,8 @@ void InitializeLog() {
     }
 
     *path /= "SimpleTimedBlockAddons.log"sv;
+    
+    // Try to create the log file
     auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
 
     auto log = std::make_shared<spdlog::logger>("global log"s, std::move(sink));
@@ -18,6 +20,11 @@ void InitializeLog() {
 
     spdlog::set_default_logger(std::move(log));
     spdlog::set_pattern("[%H:%M:%S] [%l] %v"s);
+    
+    // Log the path so we can verify where the log is going
+    logger::info("=== Simple Timed Block Addons Log ===");
+    logger::info("Log file path: {}", path->string());
+    spdlog::default_logger()->flush();
 }
 
 void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
@@ -31,8 +38,11 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             // Initialize the addon (loads forms from SimpleTimedBlock.esp and installs hooks)
             TimedBlockAddon::GetSingleton()->Initialize();
             
-            // Register event sink
+            // Register event sink for timed block detection
             TimedBlockAddon::Register();
+            
+            // Register counter damage hit handler (removes damage bonus after first hit)
+            CounterDamageHitHandler::Register();
             
             // Register SKSE Menu Framework menu
             Menu::Register();
@@ -40,14 +50,27 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             logger::info("Simple Timed Block Addons initialized!");
             break;
         }
+        case SKSE::MessagingInterface::kInputLoaded: {
+            // Register counter attack input handler
+            CounterAttackInputHandler::Register();
+            logger::info("Counter attack input handler registered");
+            break;
+        }
         case SKSE::MessagingInterface::kPostLoadGame: {
             logger::debug("Post load game - reloading settings");
             Settings::GetSingleton()->LoadSettings();
+            
+            // Register animation event handler for counter slow time
+            // (needs player to exist, so done here)
+            CounterAnimEventHandler::Register();
             break;
         }
         case SKSE::MessagingInterface::kNewGame: {
             logger::debug("New game - reloading settings");
             Settings::GetSingleton()->LoadSettings();
+            
+            // Register animation event handler for counter slow time
+            CounterAnimEventHandler::Register();
             break;
         }
         default:
@@ -56,9 +79,10 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
-    SKSE::Init(skse);
-    
+    // Initialize log FIRST, before SKSE::Init
     InitializeLog();
+    
+    SKSE::Init(skse);
     
     logger::info("Simple Timed Block Addons v1.1.0");
     logger::info("By: AI Assistant");

@@ -57,27 +57,6 @@ namespace Papyrus {
         logger::debug("MCM: Set fStaggerMagnitude = {}", value);
     }
     
-    // ===== Pushback Settings =====
-    
-    bool GetEnablePushback(RE::StaticFunctionTag*) {
-        return Settings::GetSingleton()->bEnablePushback;
-    }
-    
-    void SetEnablePushback(RE::StaticFunctionTag*, bool value) {
-        Settings::GetSingleton()->bEnablePushback = value;
-        logger::debug("MCM: Set bEnablePushback = {}", value);
-    }
-    
-    float GetPushbackMagnitude(RE::StaticFunctionTag*) {
-        return Settings::GetSingleton()->fPushbackMagnitude;
-    }
-    
-    void SetPushbackMagnitude(RE::StaticFunctionTag*, float value) {
-        value = std::clamp(value, 0.0f, 10.0f);
-        Settings::GetSingleton()->fPushbackMagnitude = value;
-        logger::debug("MCM: Set fPushbackMagnitude = {}", value);
-    }
-    
     // ===== Camera Shake Settings =====
     
     bool GetEnableCameraShake(RE::StaticFunctionTag*) {
@@ -210,12 +189,6 @@ namespace Papyrus {
         vm->RegisterFunction("SetEnableStagger", SCRIPT_NAME, SetEnableStagger);
         vm->RegisterFunction("GetStaggerMagnitude", SCRIPT_NAME, GetStaggerMagnitude);
         vm->RegisterFunction("SetStaggerMagnitude", SCRIPT_NAME, SetStaggerMagnitude);
-        
-        // Pushback
-        vm->RegisterFunction("GetEnablePushback", SCRIPT_NAME, GetEnablePushback);
-        vm->RegisterFunction("SetEnablePushback", SCRIPT_NAME, SetEnablePushback);
-        vm->RegisterFunction("GetPushbackMagnitude", SCRIPT_NAME, GetPushbackMagnitude);
-        vm->RegisterFunction("SetPushbackMagnitude", SCRIPT_NAME, SetPushbackMagnitude);
         
         // Camera Shake
         vm->RegisterFunction("GetEnableCameraShake", SCRIPT_NAME, GetEnableCameraShake);
