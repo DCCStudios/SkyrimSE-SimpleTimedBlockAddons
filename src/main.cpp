@@ -11,17 +11,21 @@ void InitializeLog() {
 
     *path /= "SimpleTimedBlockAddons.log"sv;
     
-    // Try to create the log file
     auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
 
     auto log = std::make_shared<spdlog::logger>("global log"s, std::move(sink));
-    log->set_level(spdlog::level::info);
-    log->flush_on(spdlog::level::info);
+
+    // Start at debug level to capture early init messages; Settings::LoadSettings()
+    // will tighten to info if bDebugLogging is false.
+    log->set_level(spdlog::level::debug);
+    log->flush_on(spdlog::level::debug);
 
     spdlog::set_default_logger(std::move(log));
-    spdlog::set_pattern("[%H:%M:%S] [%l] %v"s);
+    spdlog::set_pattern("[%H:%M:%S.%e] [%l] %v"s);
+
+    // Periodic flush so crash logs aren't lost
+    spdlog::flush_every(std::chrono::seconds(3));
     
-    // Log the path so we can verify where the log is going
     logger::info("=== Simple Timed Block Addons Log ===");
     logger::info("Log file path: {}", path->string());
     spdlog::default_logger()->flush();
@@ -44,6 +48,9 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             // Register counter damage hit handler (removes damage bonus after first hit)
             CounterDamageHitHandler::Register();
             
+            // Initialize timed dodge radial blur IMOD (needs data handler to be ready)
+            TimedDodgeState::InitializeBlurIMOD();
+            
             // Register SKSE Menu Framework menu
             Menu::Register();
             
@@ -57,7 +64,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             break;
         }
         case SKSE::MessagingInterface::kPostLoadGame: {
-            logger::debug("Post load game - reloading settings");
+            logger::info("Post load game - reloading settings");
             Settings::GetSingleton()->LoadSettings();
             
             // Register animation event handler for counter slow time
@@ -66,7 +73,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             break;
         }
         case SKSE::MessagingInterface::kNewGame: {
-            logger::debug("New game - reloading settings");
+            logger::info("New game - reloading settings");
             Settings::GetSingleton()->LoadSettings();
             
             // Register animation event handler for counter slow time

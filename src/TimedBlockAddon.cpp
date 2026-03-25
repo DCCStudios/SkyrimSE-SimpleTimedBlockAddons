@@ -259,6 +259,9 @@ void AnimSpeedManager::PlayerAnimationHook::PlayerCharacter_UpdateAnimation(RE::
     // Update counter slow time (check for timeout)
     CounterSlowTimeState::Update();
     
+    // Update timed dodge state (slomo timer, i-frame health tracking, radial blur blending)
+    TimedDodgeState::Update();
+    
     AnimSpeedManager::Update(a_this->GetHandle(), a_deltaTime);
     _originalFunc(a_this, a_deltaTime);
 }
@@ -793,13 +796,33 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
     using Result = RE::BSEventNotifyControl;
     using HitFlag = RE::TESHitEvent::Flag;
     
-    if (!a_event || !a_event->target || a_event->projectile) {
+    if (!a_event || !a_event->target) {
         return Result::kContinue;
     }
     
     RE::Actor* defender = a_event->target->As<RE::Actor>();
     if (!defender || !defender->IsPlayerRef()) {
         return Result::kContinue;  // Only process for player
+    }
+    
+    // If a pending timed dodge is buffered and the player gets hit, cancel it
+    if (TimedDodgeState::pendingDodge) {
+        TimedDodgeState::pendingDodge = false;
+        auto* settings = Settings::GetSingleton();
+        if (settings->bDebugLogging) {
+            logger::info("[TIMED DODGE] Pending dodge cancelled - player was hit (late dodge)");
+        }
+    }
+    
+    // I-frame protection: restore health on any hit during timed dodge i-frames
+    if (TimedDodgeState::iframesActive) {
+        TimedDodgeState::OnPlayerHit(defender);
+        return Result::kContinue;
+    }
+    
+    // Skip projectiles for timed block processing
+    if (a_event->projectile) {
+        return Result::kContinue;
     }
     
     // Check if this is a blocked hit
@@ -856,7 +879,7 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
     return Result::kContinue;
 }
 
-void TimedBlockAddon::ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* attacker) {
+void TimedBlockAddon::ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* attacker, bool skipSlowmo, bool fromTimedDodge) {
     auto settings = Settings::GetSingleton();
     
     // 0. PREVENT player stagger - cancel any stagger/recoil animation on the defender
@@ -886,8 +909,8 @@ void TimedBlockAddon::ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* att
         }
     }
     
-    // 1. Freeze attacker's animation (hitstop effect - does NOT slow down the world)
-    if (settings->bEnableHitstop && attacker) {
+    // 1. Freeze attacker's animation (hitstop effect - skip for timed dodge, it has its own attacker slow)
+    if (settings->bEnableHitstop && attacker && !fromTimedDodge) {
         float hitstopSpeed = settings->fHitstopSpeed;  // 0.0 = complete freeze, 0.1 = very slow
         float hitstopDuration = settings->fHitstopDuration;
         
@@ -896,7 +919,8 @@ void TimedBlockAddon::ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* att
     }
     
     // 2. Force attacker into stagger animation (with optional skill-based chance)
-    if (settings->bEnableStagger && attacker && defender) {
+    // Skip stagger during timed dodge unless explicitly enabled
+    if (settings->bEnableStagger && attacker && defender && (!fromTimedDodge || settings->bTimedDodgeStagger)) {
         // Detect if attacker is performing a power attack (including MCO/SCAR)
         std::string powerAttackReason;
         bool isPowerAttack = IsActorPowerAttacking(attacker, &powerAttackReason);
@@ -953,13 +977,13 @@ void TimedBlockAddon::ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* att
         }
     }
     
-    // 5. Play sound effect
-    if (settings->bEnableSound) {
+    // 5. Play sound effect (timed dodge has its own sound)
+    if (settings->bEnableSound && !fromTimedDodge) {
         PlayTimedBlockSound();
     }
     
-    // 6. Apply slowmo effect (slows entire world)
-    if (settings->bEnableSlowmo) {
+    // 6. Apply slowmo effect (slows entire world) - skip if timed dodge is handling slow-mo
+    if (settings->bEnableSlowmo && !skipSlowmo && !TimedDodgeState::IsSlomoActive()) {
         ApplySlowmo(settings->fSlowmoSpeed, settings->fSlowmoDuration);
     }
 }
@@ -1049,6 +1073,7 @@ struct WAVFmtChunk {
 // Global buffer for WAV playback (needs to stay alive during playback)
 static std::vector<uint8_t> g_timedBlockAudioBuffer;
 static std::vector<uint8_t> g_counterStrikeAudioBuffer;
+static std::vector<uint8_t> g_timedDodgeAudioBuffer;
 
 // Load WAV file and apply software volume adjustment
 bool LoadWAVWithVolume(const std::filesystem::path& filePath, float volumeScale, std::vector<uint8_t>& outBuffer) {
@@ -1250,6 +1275,36 @@ void PlayCounterStrikeSound() {
     });
 }
 
+void TimedDodgeState::PlayDodgeSound() {
+    auto settings = Settings::GetSingleton();
+    float volume = settings->fTimedDodgeSoundVolume;
+
+    SKSE::GetTaskInterface()->AddTask([volume]() {
+        std::filesystem::path wavPath = std::filesystem::current_path();
+        wavPath /= "Data";
+        wavPath /= "SKSE";
+        wavPath /= "Plugins";
+        wavPath /= "SimpleTimedBlockAddons";
+        wavPath /= "timeddodge.wav";
+
+        if (std::filesystem::exists(wavPath)) {
+            if (!LoadWAVWithVolume(wavPath, volume, g_timedDodgeAudioBuffer)) {
+                logger::error("Failed to load timed dodge WAV: {}", wavPath.string());
+                return;
+            }
+            BOOL result = PlaySoundA(reinterpret_cast<LPCSTR>(g_timedDodgeAudioBuffer.data()),
+                                     NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+            if (result) {
+                logger::debug("Playing timed dodge WAV at {}% volume: {}", volume * 100.0f, wavPath.string());
+            } else {
+                logger::error("Failed to play timed dodge WAV. Error: {}", GetLastError());
+            }
+        } else {
+            logger::warn("Timed dodge WAV not found: {} - no sound will play", wavPath.string());
+        }
+    });
+}
+
 void TimedBlockAddon::ApplySlowmo(float speed, float duration) {
     logger::debug("Applying slowmo: speed={}, duration={}s", speed, duration);
     
@@ -1262,14 +1317,17 @@ void TimedBlockAddon::ApplySlowmo(float speed, float duration) {
     
     // Schedule restoration of normal speed
     std::thread([duration]() {
-        // Wait for slowmo duration in real time
         std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<long long>(duration * 1000.0f)));
         
-        // Restore normal speed on main thread
+        // Only restore speed if timed dodge slomo isn't running (avoid conflicting restorations)
         SKSE::GetTaskInterface()->AddTask([]() {
-            static REL::Relocation<float*> gtm{ RELOCATION_ID(511883, 388443) };
-            *gtm = 1.0f;
-            logger::debug("Slowmo ended, speed restored to normal");
+            if (!TimedDodgeState::IsSlomoActive()) {
+                static REL::Relocation<float*> gtm{ RELOCATION_ID(511883, 388443) };
+                *gtm = 1.0f;
+                logger::debug("Slowmo ended, speed restored to normal");
+            } else {
+                logger::debug("Slowmo restoration skipped - timed dodge slomo is active");
+            }
         });
     }).detach();
 }
@@ -1332,6 +1390,7 @@ void CounterAttackState::StartWindow(RE::Actor* attacker)
     }
     
     inWindow = true;
+    fromTimedDodge = false;
     windowEndTime = std::chrono::steady_clock::now() + 
         std::chrono::milliseconds(static_cast<long long>(settings->fCounterAttackWindow * 1000.0f));
     
@@ -1405,43 +1464,51 @@ void CounterAttackState::OnAttackInput()
         return;
     }
     
-    // Cancel the block recoil/stagger animation by sending animation events
-    // This allows the player to attack instead of waiting for the block animation to finish
+    if (fromTimedDodge) {
+        // Interrupt dodge recovery so the attack animation can play
+        player->NotifyAnimationGraph("IdleForceDefaultState");
+    } else {
+        // Cancel block recoil/stagger so the attack can follow through
+        player->SetGraphVariableBool("IsStaggering", false);
+        player->SetGraphVariableBool("IsRecoiling", false);
+        player->SetGraphVariableBool("IsBlockHit", false);
+        player->SetGraphVariableBool("bIsBlocking", false);
+        player->SetGraphVariableFloat("staggerMagnitude", 0.0f);
+        
+        player->SetGraphVariableBool("Maxsu_IsBlockHit", false);
+        player->SetGraphVariableBool("bMaxsu_BlockHit", false);
+        player->SetGraphVariableFloat("Maxsu_BlockHitStrength", 0.0f);
+        
+        player->NotifyAnimationGraph("staggerStop");
+        player->NotifyAnimationGraph("recoilStop");
+        player->NotifyAnimationGraph("blockStop");
+        player->NotifyAnimationGraph("BlockHitEnd");
+        
+        player->NotifyAnimationGraph("Maxsu_BlockHitEnd");
+        player->NotifyAnimationGraph("Maxsu_BlockHitInterrupt");
+        player->NotifyAnimationGraph("Maxsu_WeaponBlockHitEnd");
+        player->NotifyAnimationGraph("Maxsu_ShieldBlockHitEnd");
+    }
     
-    // Cancel stagger/recoil/block hit states (vanilla)
-    player->SetGraphVariableBool("IsStaggering", false);
-    player->SetGraphVariableBool("IsRecoiling", false);
-    player->SetGraphVariableBool("IsBlockHit", false);
-    player->SetGraphVariableBool("bIsBlocking", false);
-    player->SetGraphVariableFloat("staggerMagnitude", 0.0f);
+    // If timed dodge slomo is active, cancel it (counter attack ends the slow-mo)
+    if (TimedDodgeState::IsSlomoActive()) {
+        TimedDodgeState::End();
+        if (settings->bDebugLogging) {
+            logger::info("[COUNTER] Cancelled timed dodge slomo via counter attack");
+        }
+    }
     
-    // MaxuBlockOverhaul compatibility - reset its custom variables
-    player->SetGraphVariableBool("Maxsu_IsBlockHit", false);
-    player->SetGraphVariableBool("bMaxsu_BlockHit", false);
-    player->SetGraphVariableFloat("Maxsu_BlockHitStrength", 0.0f);
-    
-    // Send animation events to interrupt stagger/block (vanilla)
-    player->NotifyAnimationGraph("staggerStop");
-    player->NotifyAnimationGraph("recoilStop");
-    player->NotifyAnimationGraph("blockStop");
-    player->NotifyAnimationGraph("BlockHitEnd");
-    
-    // MaxuBlockOverhaul compatibility - send its custom interrupt events
-    player->NotifyAnimationGraph("Maxsu_BlockHitEnd");
-    player->NotifyAnimationGraph("Maxsu_BlockHitInterrupt");
-    player->NotifyAnimationGraph("Maxsu_WeaponBlockHitEnd");
-    player->NotifyAnimationGraph("Maxsu_ShieldBlockHitEnd");
-    
-    // Start lunge toward attacker if enabled
-    if (settings->bEnableCounterLunge) {
+    // Start lunge toward attacker (timed dodge has its own toggle)
+    bool lungeEnabled = fromTimedDodge ? settings->bTimedDodgeCounterLunge : settings->bEnableCounterLunge;
+    if (lungeEnabled) {
         RE::Actor* attacker = GetLastAttacker();
         if (attacker && attacker->Is3DLoaded()) {
             CounterLungeState::Start(player, attacker);
         }
     }
     
-    // Apply damage bonus if enabled
-    if (settings->bEnableCounterDamageBonus) {
+    // Apply damage bonus (timed dodge always applies its own bonus, timed block checks its toggle)
+    if (settings->bEnableCounterDamageBonus || fromTimedDodge) {
         ApplyDamageBonus();
     }
     
@@ -1463,20 +1530,22 @@ void CounterAttackState::ApplyDamageBonus()
         return;
     }
     
-    // Just set the state - we apply the actual damage when the hit lands
-    appliedDamageBonus = settings->fCounterDamageBonusPercent;
+    // Use timed dodge damage if counter was triggered from a timed dodge
+    float damagePercent = fromTimedDodge ? settings->fTimedDodgeCounterDamagePercent : settings->fCounterDamageBonusPercent;
+    
+    appliedDamageBonus = damagePercent;
     damageBonusActive = true;
     
     // Set the timeout for damage bonus (starts now, when counter attack is initiated)
     auto timeoutMs = static_cast<int>(settings->fCounterDamageBonusTimeout * 1000.0f);
     damageBonusEndTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     
-    logger::info("[COUNTER DAMAGE] Armed +{:.0f}% damage bonus (timeout: {:.1f}s)", 
-        settings->fCounterDamageBonusPercent, settings->fCounterDamageBonusTimeout);
+    logger::info("[COUNTER DAMAGE] Armed +{:.0f}% damage bonus (timeout: {:.1f}s, source: {})", 
+        damagePercent, settings->fCounterDamageBonusTimeout, fromTimedDodge ? "timed dodge" : "timed block");
     spdlog::default_logger()->flush();
     
     if (settings->bDebugLogging) {
-        RE::DebugNotification(fmt::format("[TB] +{:.0f}% damage ready!", settings->fCounterDamageBonusPercent).c_str());
+        RE::DebugNotification(fmt::format("[TB] +{:.0f}% damage ready!", damagePercent).c_str());
     }
 }
 
@@ -1526,7 +1595,9 @@ RE::BSEventNotifyControl CounterAttackInputHandler::ProcessEvent(
     }
     
     auto* settings = Settings::GetSingleton();
-    if (!settings->bEnableCounterAttack || !CounterAttackState::IsInWindow()) {
+    bool counterEnabled = settings->bEnableCounterAttack || 
+                          (settings->bTimedDodgeCounterAttack && TimedDodgeState::IsActive());
+    if (!counterEnabled || !CounterAttackState::IsInWindow()) {
         return RE::BSEventNotifyControl::kContinue;
     }
     
@@ -1585,53 +1656,35 @@ void CounterLungeState::Start(RE::Actor* player, RE::Actor* target)
     startPos = player->GetPosition();
     RE::NiPoint3 targetPos = target->GetPosition();
     
-    // Calculate distance to target (horizontal only)
     RE::NiPoint3 diff = targetPos - startPos;
     diff.z = 0.0f;
     float distance = diff.Length();
     
-    // Don't lunge if too close (prevents collision issues)
-    if (distance < MIN_LUNGE_DISTANCE) {
+    // Already within melee range, no lunge needed
+    if (distance <= MELEE_STOP_DISTANCE) {
         if (settings->bDebugLogging) {
-            logger::info("[LUNGE] Target too close ({:.1f} < {:.1f}), skipping lunge", 
-                distance, MIN_LUNGE_DISTANCE);
-            RE::DebugNotification("[TB] Target too close for lunge");
+            logger::info("[LUNGE] Already in melee range ({:.1f} <= {:.1f}), skipping", distance, MELEE_STOP_DISTANCE);
         }
         return;
     }
     
-    // Store target handle so we can track them during the lunge
     targetHandle = target->GetHandle();
     
-    // Calculate lunge parameters
-    // Don't go past 80% of distance (leave some gap to target)
-    float targetDist = distance * 0.8f - MIN_LUNGE_DISTANCE * 0.5f;
-    if (targetDist < 50.0f) {
-        targetDist = 50.0f;  // Minimum lunge distance
-    }
-    maxDistance = (std::min)(targetDist, settings->fCounterLungeDistance);
-    speed = settings->fCounterLungeSpeed;
-    duration = maxDistance / speed;
+    // Travel enough to reach melee range, capped by the max lunge distance setting
+    float desiredTravel = distance - MELEE_STOP_DISTANCE;
+    totalDistance = (std::min)(desiredTravel, settings->fCounterLungeDistance);
+    
+    // Duration from smoothstep: peak velocity = 1.5 * D/T, so T = 1.5 * D / peakSpeed
+    duration = 1.5f * totalDistance / settings->fCounterLungeSpeed;
+    if (duration < 0.1f) duration = 0.1f;
+    if (duration > 1.0f) duration = 1.0f;
+    
     elapsed = 0.0f;
     active = true;
     
     if (settings->bDebugLogging) {
-        float playerYaw = player->GetAngle().z;
-        RE::NiPoint3 worldDir = diff / distance;
-        float targetAngle = std::atan2(worldDir.x, worldDir.y);
-        
-        logger::info("[LUNGE] ========== LUNGE STARTED ==========");
-        logger::info("[LUNGE] Target: '{}', Distance: {:.1f} units", target->GetName(), distance);
-        logger::info("[LUNGE] Max lunge distance: {:.1f}, Speed: {:.1f}, Duration: {:.3f}s", 
-            maxDistance, speed, duration);
-        logger::info("[LUNGE] Player: ({:.1f}, {:.1f}, {:.1f}), Yaw: {:.2f} rad ({:.1f} deg)", 
-            startPos.x, startPos.y, startPos.z, playerYaw, playerYaw * 57.2958f);
-        logger::info("[LUNGE] Target: ({:.1f}, {:.1f}, {:.1f})", 
-            targetPos.x, targetPos.y, targetPos.z);
-        logger::info("[LUNGE] Direction to target: ({:.3f}, {:.3f}), Angle: {:.2f} rad ({:.1f} deg)", 
-            worldDir.x, worldDir.y, targetAngle, targetAngle * 57.2958f);
-        spdlog::default_logger()->flush();
-        RE::DebugNotification("[TB] Lunge!");
+        logger::info("[LUNGE] Started: target='{}', dist={:.0f}, travel={:.0f}, duration={:.2f}s",
+            target->GetName(), distance, totalDistance, duration);
     }
 }
 
@@ -1647,19 +1700,15 @@ void CounterLungeState::ApplyVelocity(RE::bhkCharacterController* controller, fl
         return;
     }
     
-    // Verify this is the player's controller
-    auto* playerController = player->GetCharController();
-    if (playerController != controller) {
-        return;  // Not the player's controller
+    if (player->GetCharController() != controller) {
+        return;
     }
     
-    // Check if still on ground
     if (controller->context.currentState != RE::hkpCharacterStateType::kOnGround) {
         Cancel();
         return;
     }
     
-    // Get the target's CURRENT position (they may have moved)
     auto targetPtr = targetHandle.get();
     RE::Actor* target = targetPtr.get();
     if (!target || !target->Is3DLoaded()) {
@@ -1670,87 +1719,44 @@ void CounterLungeState::ApplyVelocity(RE::bhkCharacterController* controller, fl
     RE::NiPoint3 currentPos = player->GetPosition();
     RE::NiPoint3 targetPos = target->GetPosition();
     
-    // Calculate current direction to target (horizontal only)
     RE::NiPoint3 toTarget = targetPos - currentPos;
     toTarget.z = 0.0f;
     float distanceToTarget = toTarget.Length();
     
-    // Stop if we're close enough to the target
-    if (distanceToTarget < MIN_LUNGE_DISTANCE) {
-        auto* settings = Settings::GetSingleton();
-        if (settings->bDebugLogging) {
-            logger::info("[LUNGE] Reached target (distance: {:.1f}), ending lunge", distanceToTarget);
-        }
+    // Reached melee range
+    if (distanceToTarget <= MELEE_STOP_DISTANCE) {
         Cancel();
         return;
     }
     
     elapsed += deltaTime;
-    
-    // Check if lunge is complete by time
-    if (elapsed >= duration) {
-        Cancel();
-        return;
-    }
-    
-    // Check distance traveled from start
-    RE::NiPoint3 fromStart = currentPos - startPos;
-    fromStart.z = 0.0f;
-    float traveled = fromStart.Length();
-    
-    if (traveled >= maxDistance) {
-        Cancel();
-        return;
-    }
-    
-    // Calculate current speed using ease-out curve
     float t = elapsed / duration;
-    float curveFactor = 1.0f - (t * t);  // Ease-out quadratic
-    curveFactor = (std::max)(curveFactor, 0.2f);
-    float currentSpeed = speed * curveFactor;
     
-    // Normalize direction to target
-    RE::NiPoint3 worldDirection = toTarget / distanceToTarget;
-    
-    // Get player's yaw angle
-    float playerYaw = player->GetAngle().z;
-    
-    // Calculate the world angle of the direction to target
-    // atan2(x, y) gives angle from +Y axis (north), positive = counterclockwise
-    float targetAngle = std::atan2(worldDirection.x, worldDirection.y);
-    
-    // Calculate relative angle (how much to the left/right of player's facing)
-    float relativeAngle = targetAngle - playerYaw;
-    
-    // Normalize to -PI to PI range
-    while (relativeAngle > 3.14159f) relativeAngle -= 6.28318f;
-    while (relativeAngle < -3.14159f) relativeAngle += 6.28318f;
-    
-    // Convert to local velocity
-    // sin(0) = 0, cos(0) = 1 means straight ahead
-    // sin(PI/2) = 1, cos(PI/2) = 0 means right
-    float localX = std::sin(relativeAngle);  // Strafe (positive = right)
-    float localY = std::cos(relativeAngle);  // Forward (positive = forward)
-    
-    // Apply to velocityMod
-    auto* vel = reinterpret_cast<float*>(&(controller->velocityMod));
-    vel[0] = currentSpeed * localX;   // Strafe
-    vel[1] = currentSpeed * localY;   // Forward/back
-    
-    auto* settings = Settings::GetSingleton();
-    if (settings->bDebugLogging) {
-        // Log every few frames
-        static int frameCounter = 0;
-        if (++frameCounter % 10 == 0) {
-            logger::info("[LUNGE] Frame {}: pos=({:.0f},{:.0f}), target=({:.0f},{:.0f}), dist={:.1f}", 
-                frameCounter, currentPos.x, currentPos.y, targetPos.x, targetPos.y, distanceToTarget);
-            logger::info("[LUNGE]   playerYaw={:.2f}deg, targetAngle={:.2f}deg, relAngle={:.2f}deg", 
-                playerYaw * 57.2958f, targetAngle * 57.2958f, relativeAngle * 57.2958f);
-            logger::info("[LUNGE]   localDir=({:.2f},{:.2f}), vel=({:.1f},{:.1f}), traveled={:.1f}/{:.1f}", 
-                localX, localY, vel[0], vel[1], traveled, maxDistance);
-            spdlog::default_logger()->flush();
-        }
+    if (t >= 1.0f) {
+        Cancel();
+        return;
     }
+    
+    // Smoothstep bell-curve velocity: 6t(1-t)
+    // Starts at 0, peaks at t=0.5, returns to 0 — no jerks at either end
+    float bellCurve = 6.0f * t * (1.0f - t);
+    float currentSpeed = (totalDistance / duration) * bellCurve;
+    
+    // Convert game units/s to Havok units/s (1 Havok unit ≈ 69.99 game units)
+    constexpr float HAVOK_SCALE = 1.0f / 69.99f;
+    float havokSpeed = currentSpeed * HAVOK_SCALE;
+    
+    // Direction to target in Skyrim world space
+    RE::NiPoint3 worldDir = toTarget / distanceToTarget;
+    
+    // velocityMod is in Havok WORLD space:
+    //   [0] = Havok X = Skyrim X (east/west)
+    //   [1] = Havok Y = Skyrim Z (vertical) — keep at 0
+    //   [2] = Havok Z = Skyrim Y (north/south)
+    auto* vel = reinterpret_cast<float*>(&(controller->velocityMod));
+    vel[0] = havokSpeed * worldDir.x;
+    vel[1] = 0.0f;
+    vel[2] = havokSpeed * worldDir.y;
 }
 
 bool CounterLungeState::IsActive()
@@ -1772,13 +1778,14 @@ void CounterLungeState::Cancel()
     active = false;
     elapsed = 0.0f;
     
-    // Clear velocityMod to stop movement
+    // Clear all velocityMod components to stop movement
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (player) {
         if (auto* controller = player->GetCharController()) {
             auto* vel = reinterpret_cast<float*>(&(controller->velocityMod));
             vel[0] = 0.0f;
             vel[1] = 0.0f;
+            vel[2] = 0.0f;
         }
     }
     
@@ -1995,7 +2002,10 @@ RE::BSEventNotifyControl CounterAnimEventHandler::ProcessEvent(
         return RE::BSEventNotifyControl::kContinue;
     }
     
-    // Forward animation events to the slow time state
+    // Check for dodge animation events (timed dodge detection)
+    TimedDodgeState::OnAnimEvent(a_event->tag.c_str());
+    
+    // Forward animation events to the counter slow time state
     CounterSlowTimeState::OnAnimEvent(a_event->tag.c_str());
     
     return RE::BSEventNotifyControl::kContinue;
@@ -2079,26 +2089,24 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
         baseDamage *= damageMult;
     }
     
-    // Calculate bonus damage
-    float bonusPercent = settings->fCounterDamageBonusPercent / 100.0f;
+    // Use the armed bonus (may differ from settings if triggered from timed dodge)
+    float bonusPercent = CounterAttackState::appliedDamageBonus / 100.0f;
     float bonusDamage = baseDamage * bonusPercent;
     
     // Apply the bonus damage directly to the target
     if (bonusDamage > 0.0f) {
-        // Get target's current health for logging
         float targetHealthBefore = target->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
         
-        // Deal the bonus damage
         target->AsActorValueOwner()->RestoreActorValue(
             RE::ACTOR_VALUE_MODIFIER::kDamage,
             RE::ActorValue::kHealth,
-            -bonusDamage  // Negative to deal damage
+            -bonusDamage
         );
         
         float targetHealthAfter = target->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
         
         logger::info("[COUNTER DAMAGE] Hit '{}': Base damage ~{:.1f}, Bonus +{:.0f}% = +{:.1f} extra damage",
-            target->GetName(), baseDamage, settings->fCounterDamageBonusPercent, bonusDamage);
+            target->GetName(), baseDamage, CounterAttackState::appliedDamageBonus, bonusDamage);
         logger::info("[COUNTER DAMAGE] Target health: {:.1f} -> {:.1f} (actual damage applied: {:.1f})",
             targetHealthBefore, targetHealthAfter, targetHealthBefore - targetHealthAfter);
         spdlog::default_logger()->flush();
@@ -2115,4 +2123,521 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
     CounterAttackState::RemoveDamageBonus();
     
     return RE::BSEventNotifyControl::kContinue;
+}
+
+//=============================================================================
+// Timed Dodge State - Perfect dodge triggers slow-mo, i-frames, radial blur
+//=============================================================================
+
+bool TimedDodgeState::IsDodgeEvent(const char* eventName)
+{
+    if (!eventName) return false;
+    
+    // Known dodge animation events from popular dodge mods
+    static const char* dodgeEvents[] = {
+        "MCO_DodgeInitiate",     // DMCO / MCO
+        "TKDR_DodgeStart",       // TK Dodge RE
+        "SidestepTrigger",       // Ultimate Dodge (sidestep)
+        "RollTrigger",           // Ultimate Dodge (roll)
+        "DodgeStart",            // Generic dodge event
+    };
+    
+    for (const auto& evt : dodgeEvents) {
+        if (std::strcmp(eventName, evt) == 0) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+void TimedDodgeState::OnAnimEvent(const char* eventName)
+{
+    if (!IsDodgeEvent(eventName)) return;
+    
+    auto* settings = Settings::GetSingleton();
+    if (!settings->bEnableTimedDodge) return;
+    
+    if (settings->bDebugLogging) {
+        logger::info("[TIMED DODGE] Dodge event detected: {}", eventName);
+    }
+    
+    // If timed dodge is already active, cancel it (another dodge cancels slomo)
+    if (slomoActive) {
+        if (settings->bDebugLogging) {
+            logger::info("[TIMED DODGE] Cancelling active timed dodge via another dodge");
+            RE::DebugNotification("[TD] Dodge cancelled slomo");
+        }
+        End();
+        return;
+    }
+    
+    OnDodgeEvent();
+}
+
+void TimedDodgeState::OnDodgeEvent()
+{
+    auto* settings = Settings::GetSingleton();
+    
+    if (IsOnCooldown()) {
+        if (settings->bDebugLogging) {
+            auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                cooldownEndTime - std::chrono::steady_clock::now()).count();
+            logger::info("[TIMED DODGE] On cooldown ({}ms remaining)", remainingMs);
+        }
+        return;
+    }
+    
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+    
+    RE::Actor* attacker = FindAttackingEnemyInRange(player, settings->fTimedDodgeDetectionRange);
+    if (attacker) {
+        logger::info("[TIMED DODGE] SUCCESS! Enemy '{}' was in attack swing phase within range",
+            attacker->GetName());
+        pendingDodge = false;
+        Start(attacker);
+        return;
+    }
+    
+    // No attacker found yet — buffer the dodge for the forgiveness window
+    if (settings->fTimedDodgeForgivenessMs > 0.0f) {
+        pendingDodge = true;
+        pendingDodgeExpiry = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(static_cast<long long>(settings->fTimedDodgeForgivenessMs));
+        if (settings->bDebugLogging) {
+            logger::info("[TIMED DODGE] No attacker yet, buffering dodge for {:.0f}ms", settings->fTimedDodgeForgivenessMs);
+        }
+    } else {
+        if (settings->bDebugLogging) {
+            logger::debug("[TIMED DODGE] No attacking enemy in range ({:.0f} units)", settings->fTimedDodgeDetectionRange);
+        }
+    }
+}
+
+void TimedDodgeState::Start(RE::Actor* attacker)
+{
+    auto* settings = Settings::GetSingleton();
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+    
+    active = true;
+    slomoActive = true;
+    
+    auto now = std::chrono::steady_clock::now();
+    effectStartTime = now;
+    effectEndTime = now + std::chrono::milliseconds(
+        static_cast<long long>(settings->fTimedDodgeSlomoDuration * 1000.0f));
+    lastBlurUpdateTime = now;
+    
+    // Store attacker
+    if (attacker) {
+        attackerHandle = attacker->GetHandle();
+    }
+    
+    // Start slow-motion via global time multiplier
+    SKSE::GetTaskInterface()->AddTask([speed = settings->fTimedDodgeSlomoSpeed]() {
+        static REL::Relocation<float*> gtm{ RELOCATION_ID(511883, 388443) };
+        *gtm = speed;
+    });
+    
+    // Arm extended i-frames (dodge animation's own i-frames play out first via MaxsuIFrame,
+    // then we take over with graph variables for the remaining slomo duration)
+    if (settings->bTimedDodgeIframes) {
+        iframesActive = true;
+        dodgeIframesEnded = false;
+    }
+    
+    // Start radial blur (set target, let Update() handle fade-in)
+    if (settings->bTimedDodgeRadialBlur) {
+        targetBlurStrength = settings->fTimedDodgeBlurStrength;
+    }
+    
+    // Start cooldown immediately (not stackable)
+    StartCooldown();
+    
+    // Open counter attack window for timed dodge (independent of timed block counter settings)
+    if (settings->bTimedDodgeCounterAttack) {
+        CounterAttackState::inWindow = true;
+        CounterAttackState::fromTimedDodge = true;
+        CounterAttackState::windowEndTime = std::chrono::steady_clock::now() + 
+            std::chrono::milliseconds(static_cast<long long>(settings->fTimedDodgeSlomoDuration * 1000.0f));
+        if (attacker) {
+            CounterAttackState::lastAttackerHandle = attacker->GetHandle();
+        }
+    }
+    
+    // Apply timed block visual effects on the attacker (hitstop, camera shake, stamina, etc.)
+    if (settings->bTimedDodgeApplyBlockEffects) {
+        auto* addon = TimedBlockAddon::GetSingleton();
+        addon->ApplyTimedBlockEffects(player, attacker, true, true);
+    }
+
+    // Slow attacker's animation speed (per-actor, independent of global game speed)
+    if (settings->bTimedDodgeAttackerSlow && attacker) {
+        AnimSpeedManager::SetAnimSpeed(attacker->GetHandle(),
+            settings->fTimedDodgeAttackerSlowSpeed,
+            settings->fTimedDodgeAttackerSlowDuration);
+    }
+
+    // Play timed dodge sound
+    if (settings->bTimedDodgeSound) {
+        PlayDodgeSound();
+    }
+    
+    if (settings->bDebugLogging) {
+        logger::info("[TIMED DODGE] Started: slomo={}s@{}%, iframes={}, blur={}, counter={}",
+            settings->fTimedDodgeSlomoDuration, settings->fTimedDodgeSlomoSpeed * 100.0f,
+            settings->bTimedDodgeIframes, settings->bTimedDodgeRadialBlur, settings->bTimedDodgeCounterAttack);
+        RE::DebugNotification("[TD] Timed Dodge!");
+    }
+}
+
+void TimedDodgeState::End()
+{
+    auto* settings = Settings::GetSingleton();
+    
+    // Restore normal game speed immediately (not via AddTask, so lunge/counter starts at full speed)
+    if (slomoActive) {
+        static REL::Relocation<float*> gtm{ RELOCATION_ID(511883, 388443) };
+        *gtm = 1.0f;
+        slomoActive = false;
+    }
+    
+    // End i-frames - only clear graph variables if we took over from the dodge
+    if (iframesActive) {
+        if (dodgeIframesEnded) {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
+                player->SetGraphVariableBool("bIframeActive", false);
+                player->SetGraphVariableBool("bInIframe", false);
+            }
+        }
+        iframesActive = false;
+        dodgeIframesEnded = false;
+    }
+    
+    // Start blur fade-out (let Update() handle the actual blending)
+    targetBlurStrength = 0.0f;
+    
+    if (settings->bDebugLogging) {
+        logger::info("[TIMED DODGE] Ended (slomo restored, i-frames off, blur fading out)");
+    }
+}
+
+void TimedDodgeState::Update()
+{
+    auto* settings = Settings::GetSingleton();
+    if (!settings->bEnableTimedDodge) {
+        // Clean up if feature was disabled while active
+        if (active) {
+            End();
+            active = false;
+            currentBlurStrength = 0.0f;
+            if (blurEffectActive && dodgeImod) {
+                RE::ImageSpaceModifierInstanceForm::Stop(dodgeImod);
+                dodgeImodInstance = nullptr;
+                blurEffectActive = false;
+                if (dodgeImod->radialBlur.strength)  dodgeImod->radialBlur.strength->floatValue = originalBlurStrength;
+                if (dodgeImod->radialBlur.rampUp)    dodgeImod->radialBlur.rampUp->floatValue   = originalBlurRampUp;
+                if (dodgeImod->radialBlur.rampDown)  dodgeImod->radialBlur.rampDown->floatValue = originalBlurRampDown;
+                if (dodgeImod->radialBlur.start)     dodgeImod->radialBlur.start->floatValue    = originalBlurStart;
+            }
+        }
+        pendingDodge = false;
+        return;
+    }
+    
+    // Check pending early-dodge buffer
+    if (pendingDodge) {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= pendingDodgeExpiry) {
+            pendingDodge = false;
+            if (settings->bDebugLogging) {
+                logger::debug("[TIMED DODGE] Forgiveness window expired, no attacker entered swing");
+            }
+        } else {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
+                RE::Actor* attacker = FindAttackingEnemyInRange(player, settings->fTimedDodgeDetectionRange);
+                if (attacker) {
+                    pendingDodge = false;
+                    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - (pendingDodgeExpiry -
+                        std::chrono::milliseconds(static_cast<long long>(settings->fTimedDodgeForgivenessMs)))).count();
+                    logger::info("[TIMED DODGE] Forgiveness hit! Enemy '{}' entered swing {}ms after dodge",
+                        attacker->GetName(), elapsedMs);
+                    Start(attacker);
+                }
+            }
+        }
+    }
+
+    if (!active) return;
+    
+    auto now = std::chrono::steady_clock::now();
+    
+    // Calculate real-time delta for blur blending (not affected by game slow-mo)
+    float realDelta = std::chrono::duration<float>(now - lastBlurUpdateTime).count();
+    lastBlurUpdateTime = now;
+    realDelta = std::clamp(realDelta, 0.0f, 0.1f);  // Cap to avoid huge jumps
+    
+    // Check if slomo duration has expired
+    if (slomoActive && now >= effectEndTime) {
+        if (settings->bDebugLogging) {
+            logger::info("[TIMED DODGE] Slomo duration expired");
+        }
+        End();
+    }
+    
+    // Extended i-frames: let the dodge animation's own i-frames finish first,
+    // then we take over with graph variables for the remaining slomo duration
+    if (iframesActive) {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (player) {
+            if (!dodgeIframesEnded) {
+                // Wait for the dodge's natural i-frames to end
+                bool bInIframe = false;
+                player->GetGraphVariableBool("bInIframe", bInIframe);
+                if (!bInIframe) {
+                    dodgeIframesEnded = true;
+                    // Snapshot health for fallback at the moment we take over
+                    auto* avOwner = player->AsActorValueOwner();
+                    if (avOwner) {
+                        trackedHealth = avOwner->GetActorValue(RE::ActorValue::kHealth);
+                    }
+                    if (settings->bDebugLogging) {
+                        logger::info("[TIMED DODGE] Dodge i-frames ended, taking over with extended i-frames");
+                    }
+                }
+            }
+            
+            if (dodgeIframesEnded) {
+                // We own the graph variables now - set them each frame
+                player->SetGraphVariableBool("bIframeActive", true);
+                player->SetGraphVariableBool("bInIframe", true);
+            }
+        }
+    }
+    
+    // Update radial blur blending
+    if (dodgeImod && dodgeImod->radialBlur.strength) {
+        // Smoothly blend toward target blur strength using real-time delta
+        float blendArg = settings->fTimedDodgeBlurBlendSpeed * realDelta;
+        if (blendArg > 0.99f) blendArg = 0.99f;
+        float blurBlendFactor = 1.0f - std::pow(1.0f - blendArg, 1.0f);
+        currentBlurStrength = currentBlurStrength + 
+            (targetBlurStrength - currentBlurStrength) * blurBlendFactor;
+        
+        // Snap to target when very close
+        if (std::abs(currentBlurStrength - targetBlurStrength) < 0.005f) {
+            currentBlurStrength = targetBlurStrength;
+        }
+        
+        // Update IMOD parameters
+        dodgeImod->radialBlur.strength->floatValue = currentBlurStrength;
+        if (dodgeImod->radialBlur.rampUp) {
+            dodgeImod->radialBlur.rampUp->floatValue = settings->fTimedDodgeBlurRampUp;
+        }
+        if (dodgeImod->radialBlur.rampDown) {
+            dodgeImod->radialBlur.rampDown->floatValue = settings->fTimedDodgeBlurRampDown;
+        }
+        if (dodgeImod->radialBlur.start) {
+            dodgeImod->radialBlur.start->floatValue = settings->fTimedDodgeBlurRadius;
+        }
+        
+        // Trigger IMOD when blur strength rises above threshold
+        if (currentBlurStrength > 0.01f) {
+            if (!blurEffectActive) {
+                dodgeImodInstance = RE::ImageSpaceModifierInstanceForm::Trigger(dodgeImod, 1.0f, nullptr);
+                blurEffectActive = true;
+                if (settings->bDebugLogging) {
+                    logger::info("[TIMED DODGE] Radial blur activated (strength: {:.2f})", currentBlurStrength);
+                }
+            }
+        } else if (blurEffectActive) {
+            // Stop IMOD and restore original values
+            RE::ImageSpaceModifierInstanceForm::Stop(dodgeImod);
+            dodgeImodInstance = nullptr;
+            blurEffectActive = false;
+            dodgeImod->radialBlur.strength->floatValue = originalBlurStrength;
+            if (dodgeImod->radialBlur.rampUp)   dodgeImod->radialBlur.rampUp->floatValue   = originalBlurRampUp;
+            if (dodgeImod->radialBlur.rampDown) dodgeImod->radialBlur.rampDown->floatValue = originalBlurRampDown;
+            if (dodgeImod->radialBlur.start)    dodgeImod->radialBlur.start->floatValue    = originalBlurStart;
+            if (settings->bDebugLogging) {
+                logger::info("[TIMED DODGE] Radial blur deactivated (originals restored)");
+            }
+        }
+    }
+    
+    // Deactivate the timed dodge entirely once slomo is done AND blur has faded out
+    if (!slomoActive && currentBlurStrength <= 0.01f) {
+        active = false;
+        if (settings->bDebugLogging) {
+            logger::info("[TIMED DODGE] Fully deactivated (blur fade-out complete)");
+        }
+    }
+}
+
+bool TimedDodgeState::IsActive()
+{
+    return active;
+}
+
+bool TimedDodgeState::IsSlomoActive()
+{
+    return slomoActive;
+}
+
+bool TimedDodgeState::IsOnCooldown()
+{
+    if (!onCooldown) return false;
+    
+    auto now = std::chrono::steady_clock::now();
+    if (now >= cooldownEndTime) {
+        onCooldown = false;
+        return false;
+    }
+    return true;
+}
+
+void TimedDodgeState::StartCooldown()
+{
+    auto* settings = Settings::GetSingleton();
+    onCooldown = true;
+    cooldownEndTime = std::chrono::steady_clock::now() + 
+        std::chrono::milliseconds(static_cast<long long>(settings->fTimedDodgeCooldown * 1000.0f));
+    
+    if (settings->bDebugLogging) {
+        logger::info("[TIMED DODGE] Cooldown started ({:.1f}s)", settings->fTimedDodgeCooldown);
+    }
+}
+
+void TimedDodgeState::OnPlayerHit(RE::Actor* player)
+{
+    // Fallback only for our extended i-frame window (after dodge's own i-frames ended)
+    if (!iframesActive || !dodgeIframesEnded || !player) return;
+    
+    auto* settings = Settings::GetSingleton();
+    auto* avOwner = player->AsActorValueOwner();
+    if (!avOwner) return;
+    
+    float currentHealth = avOwner->GetActorValue(RE::ActorValue::kHealth);
+    
+    if (currentHealth < trackedHealth) {
+        float restoreAmount = trackedHealth - currentHealth;
+        avOwner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, restoreAmount);
+        trackedHealth = currentHealth + restoreAmount;
+        
+        if (settings->bDebugLogging) {
+            logger::info("[TIMED DODGE I-FRAME FALLBACK] Restored {:.1f} damage (MaxsuIFrame may not be installed)", 
+                restoreAmount);
+        }
+    }
+}
+
+void TimedDodgeState::InitializeBlurIMOD()
+{
+    // Use the GetHit IMOD (0x162) directly instead of cloning
+    auto* form = RE::TESForm::LookupByID(0x162);
+    if (form) {
+        auto* imod = form->As<RE::TESImageSpaceModifier>();
+        if (imod && imod->radialBlur.strength) {
+            dodgeImod = imod;
+            // Save original values for restoration
+            originalBlurStrength = imod->radialBlur.strength->floatValue;
+            if (imod->radialBlur.rampUp)   originalBlurRampUp   = imod->radialBlur.rampUp->floatValue;
+            if (imod->radialBlur.rampDown) originalBlurRampDown = imod->radialBlur.rampDown->floatValue;
+            if (imod->radialBlur.start)    originalBlurStart    = imod->radialBlur.start->floatValue;
+            logger::info("[TIMED DODGE] Using GetHit IMOD (0x162) for radial blur (saved originals: str={:.2f}, up={:.2f}, dn={:.2f}, start={:.2f})",
+                originalBlurStrength, originalBlurRampUp, originalBlurRampDown, originalBlurStart);
+            return;
+        }
+    }
+    
+    // Fallback: search all IMODs for one with radial blur
+    auto* dataHandler = RE::TESDataHandler::GetSingleton();
+    if (dataHandler) {
+        for (auto* imod : dataHandler->GetFormArray<RE::TESImageSpaceModifier>()) {
+            if (imod && imod->radialBlur.strength) {
+                dodgeImod = imod;
+                originalBlurStrength = imod->radialBlur.strength->floatValue;
+                if (imod->radialBlur.rampUp)   originalBlurRampUp   = imod->radialBlur.rampUp->floatValue;
+                if (imod->radialBlur.rampDown) originalBlurRampDown = imod->radialBlur.rampDown->floatValue;
+                if (imod->radialBlur.start)    originalBlurStart    = imod->radialBlur.start->floatValue;
+                const char* editorID = imod->GetFormEditorID();
+                logger::info("[TIMED DODGE] Using fallback IMOD: {} (FormID: {:X})",
+                    editorID ? editorID : "unknown", imod->GetFormID());
+                return;
+            }
+        }
+    }
+    
+    logger::error("[TIMED DODGE] No IMOD with radial blur found - blur effect disabled");
+    dodgeImod = nullptr;
+}
+
+RE::Actor* TimedDodgeState::FindAttackingEnemyInRange(RE::Actor* player, float range)
+{
+    if (!player) return nullptr;
+    
+    auto* settings = Settings::GetSingleton();
+    auto playerPos = player->GetPosition();
+    float rangeSq = range * range;
+    
+    RE::Actor* closestAttacker = nullptr;
+    float closestDistSq = rangeSq + 1.0f;
+    
+    auto* processLists = RE::ProcessLists::GetSingleton();
+    if (!processLists) return nullptr;
+    
+    for (auto& actorHandle : processLists->highActorHandles) {
+        auto actor = actorHandle.get().get();
+        if (!actor || actor == player || actor->IsDead()) {
+            continue;
+        }
+        
+        // Must be hostile to the player
+        if (!actor->IsHostileToActor(player)) {
+            continue;
+        }
+        
+        // Distance check (squared for performance)
+        float distSq = playerPos.GetSquaredDistance(actor->GetPosition());
+        if (distSq > rangeSq) {
+            continue;
+        }
+        
+        // Must be in combat and targeting the player
+        if (!actor->IsInCombat()) {
+            continue;
+        }
+        auto combatTarget = actor->GetActorRuntimeData().currentCombatTarget.get();
+        if (!combatTarget || combatTarget.get() != player) {
+            continue;
+        }
+        
+        // Check if the enemy is in an active attack state (swing phase = attack committed)
+        auto attackState = actor->AsActorState()->GetAttackState();
+        bool isAttacking = (attackState == RE::ATTACK_STATE_ENUM::kSwing ||
+                           attackState == RE::ATTACK_STATE_ENUM::kHit ||
+                           attackState == RE::ATTACK_STATE_ENUM::kBash);
+        
+        if (!isAttacking) {
+            continue;
+        }
+        
+        // Track closest attacker
+        if (distSq < closestDistSq) {
+            closestDistSq = distSq;
+            closestAttacker = actor;
+        }
+    }
+    
+    if (closestAttacker && settings->bDebugLogging) {
+        logger::info("[TIMED DODGE] Found attacking enemy: '{}' at {:.0f} units (attack state: {})",
+            closestAttacker->GetName(), std::sqrt(closestDistSq),
+            static_cast<int>(closestAttacker->AsActorState()->GetAttackState()));
+    }
+    
+    return closestAttacker;
 }

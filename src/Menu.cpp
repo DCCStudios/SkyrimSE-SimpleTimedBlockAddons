@@ -644,6 +644,251 @@ namespace Menu
             }
         }
         
+        // ===== TIMED DODGE SECTION =====
+        if (ImGui::CollapsingHeader("Timed Dodge", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::Checkbox("Enable Timed Dodge", &settings->bEnableTimedDodge)) {
+                State::MarkChanged();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Dodge at the precise moment an enemy attacks to trigger\nslow-motion, i-frames, and radial blur.\n\nWorks with DMCO, TK Dodge RE, and Ultimate Dodge.");
+            }
+            
+            if (settings->bEnableTimedDodge) {
+                ImGui::Indent();
+                
+                // Slow-motion settings
+                ImGui::Spacing();
+                ImGui::Text("Slow Motion");
+                ImGui::Separator();
+                
+                if (ImGui::SliderFloat("Slomo Duration (sec)##dodge", &settings->fTimedDodgeSlomoDuration, 1.0f, 10.0f, "%.1f sec")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("How long the slow-motion effect lasts (real-time seconds).\nDefault: 4 seconds");
+                }
+                
+                float dodgeSpeedPercent = settings->fTimedDodgeSlomoSpeed * 100.0f;
+                if (ImGui::SliderFloat("Game Speed##dodge", &dodgeSpeedPercent, 1.0f, 50.0f, "%.0f%%")) {
+                    settings->fTimedDodgeSlomoSpeed = dodgeSpeedPercent / 100.0f;
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("How slow the game world moves during the effect.\n5%% = very slow (default)\n25%% = quarter speed\n50%% = half speed");
+                }
+                
+                if (ImGui::SliderFloat("Cooldown (sec)##dodge", &settings->fTimedDodgeCooldown, 0.5f, 15.0f, "%.1f sec")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Cooldown before another timed dodge can trigger.\nPrevents spamming. Default: 3 seconds");
+                }
+                
+                if (ImGui::SliderFloat("Detection Range##dodge", &settings->fTimedDodgeDetectionRange, 100.0f, 600.0f, "%.0f units")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("How close an attacking enemy must be for the timed dodge\nto trigger. Lower = requires closer timing.\n\n200 = very close (dagger range)\n300 = default (sword range)\n500 = generous (greatsword range)");
+                }
+
+                if (ImGui::SliderFloat("Forgiveness (ms)##dodge", &settings->fTimedDodgeForgivenessMs, 0.0f, 500.0f, "%.0f ms")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Grace period for dodging slightly too early.\nIf you dodge before the enemy commits to a swing,\nthe game will check for an attack over this window.\n\n0 = no forgiveness (frame-perfect)\n200 = default (generous)\n500 = very forgiving\n\nOnly helps early dodges. Late dodges still get hit.");
+                }
+                
+                // I-Frames
+                ImGui::Spacing();
+                ImGui::Text("I-Frames (Invulnerability)");
+                ImGui::Separator();
+                
+                if (ImGui::Checkbox("Enable I-Frames##dodge", &settings->bTimedDodgeIframes)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Player cannot be damaged during the slow-motion effect.\nDuration matches the slow-motion duration.");
+                }
+                
+                // Counter Attack
+                ImGui::Spacing();
+                ImGui::Text("Counter Attack During Timed Dodge");
+                ImGui::Separator();
+                
+                if (ImGui::Checkbox("Enable Counter Attack##dodge", &settings->bTimedDodgeCounterAttack)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Attack during slow-motion to cancel the effect and perform\na counter attack. Uses the same lunge and sound settings\nfrom the timed block counter attack section.");
+                }
+
+                if (settings->bTimedDodgeCounterAttack) {
+                    ImGui::Indent();
+
+                    float dodgeDmgMult = 1.0f + (settings->fTimedDodgeCounterDamagePercent / 100.0f);
+                    if (ImGui::SliderFloat("Counter Damage Multiplier##dodge", &dodgeDmgMult, 1.0f, 5.0f, "%.1fx")) {
+                        settings->fTimedDodgeCounterDamagePercent = (dodgeDmgMult - 1.0f) * 100.0f;
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Damage multiplier for counter attacks during timed dodge.\nOverrides the timed block counter damage when they differ.\n\n1.5x = +50%% bonus damage (default)\n2.0x = double damage\n3.0x = triple damage");
+                    }
+
+                    if (ImGui::Checkbox("Counter Lunge##dodge", &settings->bTimedDodgeCounterLunge)) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Lunge toward the attacker when performing a counter attack\nduring a timed dodge. Uses the lunge distance and speed\nsettings from the Counter Attack section.\n\nSeparate from the timed block counter lunge toggle.");
+                    }
+
+                    ImGui::Unindent();
+                }
+                
+                // Apply Block Effects
+                ImGui::Spacing();
+                ImGui::Text("Timed Block Effects on Attacker");
+                ImGui::Separator();
+                
+                if (ImGui::Checkbox("Apply Block Effects##dodge", &settings->bTimedDodgeApplyBlockEffects)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Apply the timed block visual effects to the attacker:\nhitstop, camera shake, stamina restore, etc.\n\nUses the settings from the timed block sections above.\nStagger and sound are controlled separately below.");
+                }
+
+                // Stagger
+                ImGui::Spacing();
+                ImGui::Text("Stagger Attacker");
+                ImGui::Separator();
+
+                if (ImGui::Checkbox("Stagger on Timed Dodge##dodge", &settings->bTimedDodgeStagger)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Force the attacker into a stagger animation on timed dodge.\nDisabled by default (the attacker slow is usually enough).");
+                }
+
+                // Attacker Animation Slow
+                ImGui::Spacing();
+                ImGui::Text("Attacker Animation Slow");
+                ImGui::Separator();
+
+                if (ImGui::Checkbox("Slow Attacker##dodge", &settings->bTimedDodgeAttackerSlow)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Slow the attacker's animation speed on timed dodge.\nThis only affects the attacker, not the whole game world.\nStacks with the global slow-motion effect.");
+                }
+
+                if (settings->bTimedDodgeAttackerSlow) {
+                    ImGui::Indent();
+
+                    float atkSlowPercent = settings->fTimedDodgeAttackerSlowSpeed * 100.0f;
+                    if (ImGui::SliderFloat("Attacker Anim Speed##dodge", &atkSlowPercent, 1.0f, 50.0f, "%.0f%%")) {
+                        settings->fTimedDodgeAttackerSlowSpeed = atkSlowPercent / 100.0f;
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("How slow the attacker's animation plays.\n5%% = nearly frozen (default)\n25%% = quarter speed\n50%% = half speed");
+                    }
+
+                    if (ImGui::SliderFloat("Slow Duration (sec)##atkSlow", &settings->fTimedDodgeAttackerSlowDuration, 0.5f, 5.0f, "%.1f sec")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("How long the attacker's animation is slowed.\nDefault: 1.5 seconds");
+                    }
+
+                    ImGui::Unindent();
+                }
+
+                // Sound
+                ImGui::Spacing();
+                ImGui::Text("Sound");
+                ImGui::Separator();
+
+                if (ImGui::Checkbox("Enable Timed Dodge Sound##dodge", &settings->bTimedDodgeSound)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Play a sound effect on successful timed dodge.\n\nWAV file: Data/SKSE/Plugins/SimpleTimedBlockAddons/timeddodge.wav");
+                }
+
+                if (settings->bTimedDodgeSound) {
+                    ImGui::Indent();
+
+                    float dodgeVolPercent = settings->fTimedDodgeSoundVolume * 100.0f;
+                    if (ImGui::SliderFloat("Dodge Sound Volume##dodge", &dodgeVolPercent, 0.0f, 100.0f, "%.0f%%")) {
+                        settings->fTimedDodgeSoundVolume = dodgeVolPercent / 100.0f;
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Volume of the timed dodge sound effect.");
+                    }
+
+                    ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f),
+                        "WAV: Data/SKSE/Plugins/SimpleTimedBlockAddons/timeddodge.wav");
+
+                    ImGui::Unindent();
+                }
+                
+                // Radial Blur
+                ImGui::Spacing();
+                ImGui::Text("Radial Blur");
+                ImGui::Separator();
+                
+                if (ImGui::Checkbox("Enable Radial Blur##dodge", &settings->bTimedDodgeRadialBlur)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Apply a radial blur effect during the slow-motion.\nFades in smoothly and fades out when slomo ends.");
+                }
+                
+                if (settings->bTimedDodgeRadialBlur) {
+                    ImGui::Indent();
+                    
+                    if (ImGui::SliderFloat("Blur Strength##dodge", &settings->fTimedDodgeBlurStrength, 0.05f, 1.0f, "%.2f")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Intensity of the radial blur effect.\n0.3 = subtle (default)\n0.5 = moderate\n1.0 = very strong");
+                    }
+                    
+                    if (ImGui::SliderFloat("Blend Speed##dodge", &settings->fTimedDodgeBlurBlendSpeed, 1.0f, 20.0f, "%.1f")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("How fast the blur fades in and out.\nHigher = faster fade. Default: 5.0");
+                    }
+                    
+                    if (ImGui::SliderFloat("Ramp Up##dodge", &settings->fTimedDodgeBlurRampUp, 0.0f, 0.5f, "%.2f sec")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("IMOD ramp up time in seconds.\nDefault: 0.1");
+                    }
+                    
+                    if (ImGui::SliderFloat("Ramp Down##dodge", &settings->fTimedDodgeBlurRampDown, 0.0f, 1.0f, "%.2f sec")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("IMOD ramp down time in seconds.\nDefault: 0.2");
+                    }
+                    
+                    if (ImGui::SliderFloat("Center Radius##dodge", &settings->fTimedDodgeBlurRadius, 0.0f, 1.0f, "%.2f")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Blur start radius (center clarity).\n0.0 = blur from center\n0.4 = moderate clarity (default)\n1.0 = blur only at edges");
+                    }
+                    
+                    ImGui::Unindent();
+                }
+                
+                ImGui::Unindent();
+            }
+        }
+        
         // ===== DEBUG SECTION =====
         if (ImGui::CollapsingHeader("Debug", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::Checkbox("Debug Logging", &settings->bDebugLogging)) {

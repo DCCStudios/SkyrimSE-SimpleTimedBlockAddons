@@ -4,6 +4,7 @@
 #include "SKSE/SKSE.h"
 
 #include <SimpleIni.h>
+#include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
 #include <atomic>

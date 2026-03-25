@@ -100,6 +100,31 @@ void Settings::LoadSettings() {
     bIgnoreCooldownOutsideRange = ini.GetBoolValue("Cooldown", "bIgnoreCooldownOutsideRange", false);
     fCooldownIgnoreDistance = static_cast<float>(ini.GetDoubleValue("Cooldown", "fCooldownIgnoreDistance", 512.0));
     
+    // Load Timed Dodge settings
+    bEnableTimedDodge = ini.GetBoolValue("TimedDodge", "bEnableTimedDodge", true);
+    fTimedDodgeSlomoDuration = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fSlomoDuration", 4.0));
+    fTimedDodgeSlomoSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fSlomoSpeed", 0.05));
+    fTimedDodgeCooldown = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCooldown", 3.0));
+    fTimedDodgeDetectionRange = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fDetectionRange", 300.0));
+    fTimedDodgeForgivenessMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fForgivenessMs", 200.0));
+    bTimedDodgeIframes = ini.GetBoolValue("TimedDodge", "bIframes", true);
+    bTimedDodgeCounterAttack = ini.GetBoolValue("TimedDodge", "bCounterAttack", true);
+    fTimedDodgeCounterDamagePercent = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterDamagePercent", 50.0));
+    bTimedDodgeCounterLunge = ini.GetBoolValue("TimedDodge", "bCounterLunge", true);
+    bTimedDodgeRadialBlur = ini.GetBoolValue("TimedDodge", "bRadialBlur", true);
+    fTimedDodgeBlurStrength = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurStrength", 0.3));
+    fTimedDodgeBlurBlendSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurBlendSpeed", 5.0));
+    fTimedDodgeBlurRampUp = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurRampUp", 0.1));
+    fTimedDodgeBlurRampDown = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurRampDown", 0.2));
+    fTimedDodgeBlurRadius = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurRadius", 0.4));
+    bTimedDodgeApplyBlockEffects = ini.GetBoolValue("TimedDodge", "bApplyBlockEffects", true);
+    bTimedDodgeStagger = ini.GetBoolValue("TimedDodge", "bStagger", false);
+    bTimedDodgeAttackerSlow = ini.GetBoolValue("TimedDodge", "bAttackerSlow", true);
+    fTimedDodgeAttackerSlowSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fAttackerSlowSpeed", 0.05));
+    fTimedDodgeAttackerSlowDuration = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fAttackerSlowDuration", 1.5));
+    bTimedDodgeSound = ini.GetBoolValue("TimedDodge", "bSound", true);
+    fTimedDodgeSoundVolume = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fSoundVolume", 1.0));
+
     // Debug logging
     bDebugLogging = ini.GetBoolValue("Log", "Debug", false);
     
@@ -130,6 +155,16 @@ void Settings::LoadSettings() {
         bEnableCounterSlowTime, fCounterSlowTimeScale, fCounterSlowTimeMaxDuration, sCounterSlowStartEvent, sCounterSlowEndEvent);
     logger::info("  Cooldown: {} (duration={}ms, ignoreOutsideRange={}, distance={})", 
         bEnableCooldown, fCooldownDurationMs, bIgnoreCooldownOutsideRange, fCooldownIgnoreDistance);
+    logger::info("  TimedDodge: {} (slomo={}s@{}%, cooldown={}s, range={}, iframes={}, counter={}, blur={})", 
+        bEnableTimedDodge, fTimedDodgeSlomoDuration, fTimedDodgeSlomoSpeed * 100.0f, 
+        fTimedDodgeCooldown, fTimedDodgeDetectionRange, bTimedDodgeIframes, 
+        bTimedDodgeCounterAttack, bTimedDodgeRadialBlur);
+    logger::info("    Forgiveness: {}ms, Stagger: {}, AttackerSlow: {} (speed={}, dur={}s)",
+        fTimedDodgeForgivenessMs, bTimedDodgeStagger, bTimedDodgeAttackerSlow,
+        fTimedDodgeAttackerSlowSpeed, fTimedDodgeAttackerSlowDuration);
+    logger::info("    CounterDmg: +{}%, CounterLunge: {}, Sound: {} (vol={}%)",
+        fTimedDodgeCounterDamagePercent, bTimedDodgeCounterLunge, bTimedDodgeSound,
+        fTimedDodgeSoundVolume * 100.0f);
     logger::info("  Debug: {}", bDebugLogging);
 }
 
@@ -232,6 +267,31 @@ void Settings::SaveSettings() {
     ini.SetBoolValue("Cooldown", "bIgnoreCooldownOutsideRange", bIgnoreCooldownOutsideRange);
     ini.SetDoubleValue("Cooldown", "fCooldownIgnoreDistance", fCooldownIgnoreDistance);
     
+    // Save Timed Dodge settings
+    ini.SetBoolValue("TimedDodge", "bEnableTimedDodge", bEnableTimedDodge);
+    ini.SetDoubleValue("TimedDodge", "fSlomoDuration", fTimedDodgeSlomoDuration);
+    ini.SetDoubleValue("TimedDodge", "fSlomoSpeed", fTimedDodgeSlomoSpeed);
+    ini.SetDoubleValue("TimedDodge", "fCooldown", fTimedDodgeCooldown);
+    ini.SetDoubleValue("TimedDodge", "fDetectionRange", fTimedDodgeDetectionRange);
+    ini.SetDoubleValue("TimedDodge", "fForgivenessMs", fTimedDodgeForgivenessMs);
+    ini.SetBoolValue("TimedDodge", "bIframes", bTimedDodgeIframes);
+    ini.SetBoolValue("TimedDodge", "bCounterAttack", bTimedDodgeCounterAttack);
+    ini.SetDoubleValue("TimedDodge", "fCounterDamagePercent", fTimedDodgeCounterDamagePercent);
+    ini.SetBoolValue("TimedDodge", "bCounterLunge", bTimedDodgeCounterLunge);
+    ini.SetBoolValue("TimedDodge", "bRadialBlur", bTimedDodgeRadialBlur);
+    ini.SetDoubleValue("TimedDodge", "fBlurStrength", fTimedDodgeBlurStrength);
+    ini.SetDoubleValue("TimedDodge", "fBlurBlendSpeed", fTimedDodgeBlurBlendSpeed);
+    ini.SetDoubleValue("TimedDodge", "fBlurRampUp", fTimedDodgeBlurRampUp);
+    ini.SetDoubleValue("TimedDodge", "fBlurRampDown", fTimedDodgeBlurRampDown);
+    ini.SetDoubleValue("TimedDodge", "fBlurRadius", fTimedDodgeBlurRadius);
+    ini.SetBoolValue("TimedDodge", "bApplyBlockEffects", bTimedDodgeApplyBlockEffects);
+    ini.SetBoolValue("TimedDodge", "bStagger", bTimedDodgeStagger);
+    ini.SetBoolValue("TimedDodge", "bAttackerSlow", bTimedDodgeAttackerSlow);
+    ini.SetDoubleValue("TimedDodge", "fAttackerSlowSpeed", fTimedDodgeAttackerSlowSpeed);
+    ini.SetDoubleValue("TimedDodge", "fAttackerSlowDuration", fTimedDodgeAttackerSlowDuration);
+    ini.SetBoolValue("TimedDodge", "bSound", bTimedDodgeSound);
+    ini.SetDoubleValue("TimedDodge", "fSoundVolume", fTimedDodgeSoundVolume);
+
     // Save debug
     ini.SetBoolValue("Log", "Debug", bDebugLogging);
     

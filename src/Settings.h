@@ -115,6 +115,47 @@ public:
     bool  bOnlyWithShield{ false };
     bool  bPerkLockedStagger{ false };
     
+    //==========================================================================
+    // Timed Dodge Settings - Perfect dodge triggers slow-mo, i-frames, blur
+    //==========================================================================
+    bool  bEnableTimedDodge{ true };              // Master toggle (enabled by default)
+    float fTimedDodgeSlomoDuration{ 4.0f };       // Slow-mo duration in seconds
+    float fTimedDodgeSlomoSpeed{ 0.05f };         // Game speed during slomo (0.05 = 5%)
+    float fTimedDodgeCooldown{ 3.0f };            // Cooldown in seconds
+    float fTimedDodgeDetectionRange{ 300.0f };    // Range to detect attacking enemies (game units)
+    float fTimedDodgeForgivenessMs{ 200.0f };    // Grace period for early dodges (milliseconds)
+
+    // Timed Dodge I-Frames
+    bool  bTimedDodgeIframes{ true };             // Player cannot be damaged during slomo
+
+    // Timed Dodge Counter Attack (reuses timed block counter attack system)
+    bool  bTimedDodgeCounterAttack{ true };       // Allow counter attack to cancel slomo
+    float fTimedDodgeCounterDamagePercent{ 50.0f }; // Counter damage bonus for timed dodge (50 = 1.5x total)
+    bool  bTimedDodgeCounterLunge{ true };        // Lunge toward attacker on timed dodge counter
+
+    // Timed Dodge Radial Blur
+    bool  bTimedDodgeRadialBlur{ true };          // Radial blur during slomo
+    float fTimedDodgeBlurStrength{ 0.3f };        // Blur strength (0-1)
+    float fTimedDodgeBlurBlendSpeed{ 5.0f };      // Blend speed for fade in/out
+    float fTimedDodgeBlurRampUp{ 0.1f };          // IMOD ramp up time (seconds)
+    float fTimedDodgeBlurRampDown{ 0.2f };        // IMOD ramp down time (seconds)
+    float fTimedDodgeBlurRadius{ 0.4f };          // Center clarity radius (0=center, 1=edges only)
+
+    // Timed Dodge - Apply timed block visual effects (hitstop, camera shake, stamina, etc.)
+    bool  bTimedDodgeApplyBlockEffects{ true };   // Apply same effects as timed block on the attacker
+
+    // Timed Dodge - Stagger attacker (separate from timed block stagger)
+    bool  bTimedDodgeStagger{ false };            // Stagger the attacker on timed dodge (default off)
+
+    // Timed Dodge - Attacker animation slow (per-actor, not game speed)
+    bool  bTimedDodgeAttackerSlow{ true };        // Slow the attacker's animation during timed dodge
+    float fTimedDodgeAttackerSlowSpeed{ 0.05f };  // Animation speed multiplier (0.05 = 5%)
+    float fTimedDodgeAttackerSlowDuration{ 1.5f };// Duration in seconds
+
+    // Timed Dodge Sound
+    bool  bTimedDodgeSound{ true };               // Play sound on timed dodge
+    float fTimedDodgeSoundVolume{ 1.0f };         // Volume for timed dodge WAV (0.0 - 1.0)
+
     // Debug
     bool bDebugLogging{ false };
 

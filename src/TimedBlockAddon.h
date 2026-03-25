@@ -114,7 +114,7 @@ public:
         RE::BSTEventSource<RE::TESHitEvent>* a_eventSource) override;
 
     // Effect methods
-    void ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* attacker);
+    void ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* attacker, bool skipSlowmo = false, bool fromTimedDodge = false);
     void PlayTimedBlockSound();
     void PlayCustomWavSound();
     void ApplySlowmo(float speed, float duration);
@@ -167,6 +167,7 @@ namespace CounterAttackState
     inline RE::ActorHandle lastAttackerHandle;  // Store attacker for lunge targeting
     inline bool damageBonusActive{ false };     // Track if damage bonus is active
     inline float appliedDamageBonus{ 0.0f };    // The actual bonus value applied
+    inline bool fromTimedDodge{ false };        // Counter window was opened by a timed dodge
     
     // Called when a timed block is successful - starts the counter attack window
     void StartWindow(RE::Actor* attacker = nullptr);
@@ -213,13 +214,12 @@ namespace CounterLungeState
     inline bool active{ false };
     inline float elapsed{ 0.0f };
     inline float duration{ 0.0f };
-    inline float speed{ 0.0f };
-    inline float maxDistance{ 0.0f };
+    inline float totalDistance{ 0.0f };
     inline RE::NiPoint3 startPos{};
-    inline RE::ActorHandle targetHandle{};  // Track the attacker during lunge
-    
-    // Minimum distance to attacker to start lunge (prevents collision issues)
-    constexpr float MIN_LUNGE_DISTANCE = 100.0f;
+    inline RE::ActorHandle targetHandle{};
+
+    // Stop this far from the target (melee striking distance)
+    constexpr float MELEE_STOP_DISTANCE = 128.0f;
     
     // Start the lunge toward the target position
     void Start(RE::Actor* player, RE::Actor* target);
@@ -280,6 +280,86 @@ public:
 private:
     CounterAnimEventHandler() = default;
 };
+
+// Timed Dodge State - tracks perfect dodge slow-motion, i-frames, radial blur
+namespace TimedDodgeState
+{
+    // Core state
+    inline bool active{ false };               // Overall timed dodge is in effect (slomo or blur fading)
+    inline bool slomoActive{ false };          // Slow-motion is currently running
+    inline bool iframesActive{ false };        // Player has i-frames (cannot be damaged)
+    inline bool dodgeIframesEnded{ false };    // Dodge animation's own i-frames have ended, we own the graph vars
+    inline float trackedHealth{ 0.0f };        // Fallback health for non-MaxsuIFrame setups
+    
+    // Timing
+    inline std::chrono::steady_clock::time_point effectStartTime;
+    inline std::chrono::steady_clock::time_point effectEndTime;
+    
+    // Cooldown
+    inline bool onCooldown{ false };
+    inline std::chrono::steady_clock::time_point cooldownEndTime;
+
+    // Early dodge forgiveness buffer
+    inline bool pendingDodge{ false };
+    inline std::chrono::steady_clock::time_point pendingDodgeExpiry;
+    
+    // Radial blur IMOD state (uses the source IMOD directly, saves/restores original values)
+    inline RE::TESImageSpaceModifier* dodgeImod{ nullptr };
+    inline RE::ImageSpaceModifierInstanceForm* dodgeImodInstance{ nullptr };
+    inline bool blurEffectActive{ false };
+    inline float currentBlurStrength{ 0.0f };
+    inline float targetBlurStrength{ 0.0f };
+    inline std::chrono::steady_clock::time_point lastBlurUpdateTime;
+    
+    // Original IMOD values to restore after blur effect ends
+    inline float originalBlurStrength{ 0.0f };
+    inline float originalBlurRampUp{ 0.0f };
+    inline float originalBlurRampDown{ 0.0f };
+    inline float originalBlurStart{ 0.0f };
+    
+    // Attacker tracking
+    inline RE::ActorHandle attackerHandle;
+    
+    // Check if an animation event name is a dodge event
+    bool IsDodgeEvent(const char* eventName);
+    
+    // Called when a dodge animation event fires on the player
+    void OnAnimEvent(const char* eventName);
+    
+    // Attempt to trigger a timed dodge (checks for attacking enemies, cooldown, etc.)
+    void OnDodgeEvent();
+    
+    // Start all timed dodge effects (slomo, i-frames, blur, counter window)
+    void Start(RE::Actor* attacker);
+    
+    // End all timed dodge effects (restore game speed, remove i-frames, fade blur)
+    void End();
+    
+    // Per-frame update: radial blur blending, i-frame health tracking, timer checks
+    void Update();
+    
+    // Is the timed dodge currently active (slomo or blur still fading)?
+    bool IsActive();
+    
+    // Is the slow-motion phase running?
+    bool IsSlomoActive();
+    
+    // Cooldown management
+    bool IsOnCooldown();
+    void StartCooldown();
+    
+    // Called when the player is hit during i-frames (restores health)
+    void OnPlayerHit(RE::Actor* player);
+    
+    // Create the radial blur IMOD (called once during initialization)
+    void InitializeBlurIMOD();
+    
+    // Find the closest hostile enemy in melee attack swing phase within range
+    RE::Actor* FindAttackingEnemyInRange(RE::Actor* player, float range);
+
+    // Play the timed dodge WAV sound
+    void PlayDodgeSound();
+}
 
 // Input event sink for detecting attack input during counter attack window
 class CounterAttackInputHandler : public RE::BSTEventSink<RE::InputEvent*> {
