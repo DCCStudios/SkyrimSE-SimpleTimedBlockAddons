@@ -485,6 +485,32 @@ namespace Menu
                     ImGui::SetTooltip("Speed of the lunge movement.\nHigher = faster dash, lower = smoother glide.\n\n400 = slow\n800 = default\n1500 = fast dash");
                 }
                 
+                {
+                    static const char* kCurveItems[] = {
+                        "Bell (Ease In-Out)", "Linear", "Ease In", "Ease Out", "Cubic In", "Cubic Out"
+                    };
+                    if (ImGui::Combo("Lunge Curve##tb", &settings->iCounterLungeCurve, kCurveItems, 6)) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip(
+                            "Velocity profile for the lunge:\n"
+                            "  Bell (Ease In-Out) - smooth start AND stop (default)\n"
+                            "  Linear             - constant speed throughout\n"
+                            "  Ease In            - slow start, fast finish\n"
+                            "  Ease Out           - fast start, slow stop\n"
+                            "  Cubic In           - strong acceleration from rest\n"
+                            "  Cubic Out          - strong deceleration into target");
+                    }
+                }
+                
+                if (ImGui::SliderFloat("Stop Distance##tb", &settings->fCounterLungeMeleeStopDistance, 32.0f, 400.0f, "%.0f units")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("How far from the target the lunge stops (timed block counter).\nLower = end closer (daggers / aggressive)\nHigher = keep more spacing (greatswords / safer)\n\nDefault: 128 units");
+                }
+                
                 ImGui::Unindent();
             }
             
@@ -719,26 +745,77 @@ namespace Menu
                     State::MarkChanged();
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Attack during slow-motion to cancel the effect and perform\na counter attack. Uses the same lunge and sound settings\nfrom the timed block counter attack section.");
+                    ImGui::SetTooltip("Attack during slow-motion to cancel the effect and perform\na counter attack. The input window is set below (independent\nof the timed block counter window).");
                 }
 
                 if (settings->bTimedDodgeCounterAttack) {
                     ImGui::Indent();
 
-                    float dodgeDmgMult = 1.0f + (settings->fTimedDodgeCounterDamagePercent / 100.0f);
-                    if (ImGui::SliderFloat("Counter Damage Multiplier##dodge", &dodgeDmgMult, 1.0f, 5.0f, "%.1fx")) {
-                        settings->fTimedDodgeCounterDamagePercent = (dodgeDmgMult - 1.0f) * 100.0f;
+                    if (ImGui::SliderFloat("Counter Window (ms)##dodge", &settings->fTimedDodgeCounterWindowMs, 100.0f, 5000.0f, "%.0f ms")) {
                         State::MarkChanged();
                     }
                     if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Damage multiplier for counter attacks during timed dodge.\nOverrides the timed block counter damage when they differ.\n\n1.5x = +50%% bonus damage (default)\n2.0x = double damage\n3.0x = triple damage");
+                        ImGui::SetTooltip("How long after a timed dodge you have to press attack\nto trigger a counter attack.\n\nIndependent of slow-motion duration.\n\nDefault: 2000 ms");
+                    }
+
+                    if (ImGui::SliderFloat("Damage Bonus##dodge", &settings->fTimedDodgeCounterDamagePercent, 10.0f, 200.0f, "+%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("How much extra damage the counter attack deals during timed dodge.\nOverrides the timed block counter damage when they differ.\n\n+50%% = 1.5x damage (default)\n+100%% = 2x damage\n+200%% = 3x damage");
+                    }
+
+                    if (ImGui::SliderFloat("Damage Timeout##dodge", &settings->fTimedDodgeCounterDamageTimeout, 0.5f, 5.0f, "%.1f sec")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("How long the damage bonus lasts after initiating the counter attack.\nNeeds to be long enough for the dodge exit animation to finish\nand your attack to connect.\n\nDefault: 3.0 seconds");
                     }
 
                     if (ImGui::Checkbox("Counter Lunge##dodge", &settings->bTimedDodgeCounterLunge)) {
                         State::MarkChanged();
                     }
                     if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Lunge toward the attacker when performing a counter attack\nduring a timed dodge. Uses the lunge distance and speed\nsettings from the Counter Attack section.\n\nSeparate from the timed block counter lunge toggle.");
+                        ImGui::SetTooltip("Lunge toward the attacker when performing a counter attack\nduring a timed dodge. Max travel and melee stop distance match\nthe Counter Attack section; lunge speed is set below.\n\nSeparate from the timed block counter lunge toggle.");
+                    }
+
+                    if (settings->bTimedDodgeCounterLunge) {
+                        ImGui::Indent();
+
+                        if (ImGui::SliderFloat("Lunge Speed##dodgeCounter", &settings->fTimedDodgeCounterLungeSpeed, 200.0f, 2000.0f, "%.0f units/s")) {
+                            State::MarkChanged();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Speed of the timed dodge counter lunge.\nHigher = faster dash, lower = smoother glide.\n\n400 = slow\n800 = default\n1500 = fast dash");
+                        }
+
+                        {
+                            static const char* kCurveItems[] = {
+                                "Bell (Ease In-Out)", "Linear", "Ease In", "Ease Out", "Cubic In", "Cubic Out"
+                            };
+                            if (ImGui::Combo("Lunge Curve##dodge", &settings->iTimedDodgeCounterLungeCurve, kCurveItems, 6)) {
+                                State::MarkChanged();
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip(
+                                    "Velocity profile for the timed dodge counter lunge:\n"
+                                    "  Bell (Ease In-Out) - smooth start AND stop (default)\n"
+                                    "  Linear             - constant speed throughout\n"
+                                    "  Ease In            - slow start, fast finish\n"
+                                    "  Ease Out           - fast start, slow stop\n"
+                                    "  Cubic In           - strong acceleration from rest\n"
+                                    "  Cubic Out          - strong deceleration into target");
+                            }
+                        }
+
+                        if (ImGui::SliderFloat("Stop Distance##dodgeCounter", &settings->fTimedDodgeCounterLungeMeleeStopDistance, 32.0f, 400.0f, "%.0f units")) {
+                            State::MarkChanged();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("How far from the target the lunge stops (timed dodge counter).\nLower = end closer (daggers / aggressive)\nHigher = keep more spacing (greatswords / safer)\n\nDefault: 128 units");
+                        }
+
+                        ImGui::Unindent();
                     }
 
                     ImGui::Unindent();

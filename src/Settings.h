@@ -82,6 +82,8 @@ public:
     bool  bEnableCounterLunge{ false };     // Disabled by default
     float fCounterLungeDistance{ 150.0f };  // Max distance to lunge (game units)
     float fCounterLungeSpeed{ 800.0f };     // Speed of lunge (units/second)
+    int   iCounterLungeCurve{ 0 };          // Velocity curve: 0=Bell, 1=Linear, 2=EaseIn, 3=EaseOut, 4=CubicIn, 5=CubicOut
+    float fCounterLungeMeleeStopDistance{ 128.0f }; // Stop lunge this far from target (timed block counter)
     
     //==========================================================================
     // Counter Attack Slow Time Settings - Slow time during counter attack
@@ -130,8 +132,13 @@ public:
 
     // Timed Dodge Counter Attack (reuses timed block counter attack system)
     bool  bTimedDodgeCounterAttack{ true };       // Allow counter attack to cancel slomo
+    float fTimedDodgeCounterWindowMs{ 2000.0f };  // How long you have to press attack (capped by slomo end)
     float fTimedDodgeCounterDamagePercent{ 50.0f }; // Counter damage bonus for timed dodge (50 = 1.5x total)
-    bool  bTimedDodgeCounterLunge{ true };        // Lunge toward attacker on timed dodge counter
+    float fTimedDodgeCounterDamageTimeout{ 3.0f }; // Timeout for dodge counter damage bonus (longer than block due to dodge exit)
+    bool  bTimedDodgeCounterLunge{ true };            // Lunge toward attacker on timed dodge counter
+    float fTimedDodgeCounterLungeSpeed{ 800.0f };    // Lunge speed for timed dodge counter (units/s)
+    int   iTimedDodgeCounterLungeCurve{ 0 };         // Velocity curve for timed dodge lunge (same enum as iCounterLungeCurve)
+    float fTimedDodgeCounterLungeMeleeStopDistance{ 128.0f }; // Stop distance for timed dodge lunge
 
     // Timed Dodge Radial Blur
     bool  bTimedDodgeRadialBlur{ true };          // Radial blur during slomo

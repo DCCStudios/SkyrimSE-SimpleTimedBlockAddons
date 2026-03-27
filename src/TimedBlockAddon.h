@@ -162,35 +162,20 @@ void DispelParryWindowSpell();
 namespace CounterAttackState
 {
     inline std::chrono::steady_clock::time_point windowEndTime;
-    inline std::chrono::steady_clock::time_point damageBonusEndTime;  // When damage bonus times out
+    inline std::chrono::steady_clock::time_point damageBonusEndTime;
     inline bool inWindow{ false };
-    inline RE::ActorHandle lastAttackerHandle;  // Store attacker for lunge targeting
-    inline bool damageBonusActive{ false };     // Track if damage bonus is active
-    inline float appliedDamageBonus{ 0.0f };    // The actual bonus value applied
-    inline bool fromTimedDodge{ false };        // Counter window was opened by a timed dodge
+    inline RE::ActorHandle lastAttackerHandle;
+    inline bool damageBonusActive{ false };
+    inline float appliedDamageBonus{ 0.0f };
+    inline bool fromTimedDodge{ false };
     
-    // Called when a timed block is successful - starts the counter attack window
     void StartWindow(RE::Actor* attacker = nullptr);
-    
-    // Called each frame to update window state and damage bonus timeout
     void Update();
-    
-    // Check if currently in counter attack window
     bool IsInWindow();
-    
-    // Called when attack input is detected - cancels block animation and starts lunge
     void OnAttackInput();
-    
-    // Get the last attacker (for lunge targeting)
     RE::Actor* GetLastAttacker();
-    
-    // Apply the counter damage bonus to the player
     void ApplyDamageBonus();
-    
-    // Remove the counter damage bonus from the player
     void RemoveDamageBonus();
-    
-    // Check if damage bonus is currently active
     bool IsDamageBonusActive();
 }
 
@@ -212,21 +197,21 @@ private:
 namespace CounterLungeState
 {
     inline bool active{ false };
+    inline bool loggedFirstFrame{ false };
+    inline int  curveType{ 0 };
+    inline float meleeStopDistance{ 128.0f };
     inline float elapsed{ 0.0f };
     inline float duration{ 0.0f };
     inline float totalDistance{ 0.0f };
     inline RE::NiPoint3 startPos{};
     inline RE::ActorHandle targetHandle{};
-
-    // Stop this far from the target (melee striking distance)
-    constexpr float MELEE_STOP_DISTANCE = 128.0f;
     
     // Start the lunge toward the target position
     void Start(RE::Actor* player, RE::Actor* target);
     
-    // Apply velocity during physics tick (called from physics hook)
+    // Move toward the target via velocityMod (called from physics hook)
     void ApplyVelocity(RE::bhkCharacterController* controller, float deltaTime);
-    
+
     // Check if lunge is currently active
     bool IsActive();
     
@@ -239,6 +224,8 @@ namespace LungePhysicsHook
 {
     void Install();
 }
+
+
 
 // Counter Slow Time state tracking - slows time during counter attack
 namespace CounterSlowTimeState
@@ -289,6 +276,7 @@ namespace TimedDodgeState
     inline bool slomoActive{ false };          // Slow-motion is currently running
     inline bool iframesActive{ false };        // Player has i-frames (cannot be damaged)
     inline bool dodgeIframesEnded{ false };    // Dodge animation's own i-frames have ended, we own the graph vars
+    inline bool counterWindowOpened{ false };  // Counter window has been opened for this timed dodge
     inline float trackedHealth{ 0.0f };        // Fallback health for non-MaxsuIFrame setups
     
     // Timing

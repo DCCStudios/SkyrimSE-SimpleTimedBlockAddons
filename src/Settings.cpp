@@ -80,6 +80,8 @@ void Settings::LoadSettings() {
     bEnableCounterLunge = ini.GetBoolValue("CounterLunge", "bEnableCounterLunge", false);
     fCounterLungeDistance = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeDistance", 150.0));
     fCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeSpeed", 800.0));
+    iCounterLungeCurve = static_cast<int>(ini.GetLongValue("CounterLunge", "iCurve", 0));
+    fCounterLungeMeleeStopDistance = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fMeleeStopDistance", 128.0));
     
     // Load Counter Slow Time settings
     bEnableCounterSlowTime = ini.GetBoolValue("CounterSlowTime", "bEnableCounterSlowTime", false);
@@ -109,8 +111,13 @@ void Settings::LoadSettings() {
     fTimedDodgeForgivenessMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fForgivenessMs", 200.0));
     bTimedDodgeIframes = ini.GetBoolValue("TimedDodge", "bIframes", true);
     bTimedDodgeCounterAttack = ini.GetBoolValue("TimedDodge", "bCounterAttack", true);
+    fTimedDodgeCounterWindowMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterWindowMs", 2000.0));
     fTimedDodgeCounterDamagePercent = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterDamagePercent", 50.0));
+    fTimedDodgeCounterDamageTimeout = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterDamageTimeout", 3.0));
     bTimedDodgeCounterLunge = ini.GetBoolValue("TimedDodge", "bCounterLunge", true);
+    fTimedDodgeCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeSpeed", 800.0));
+    iTimedDodgeCounterLungeCurve = static_cast<int>(ini.GetLongValue("TimedDodge", "iCounterLungeCurve", 0));
+    fTimedDodgeCounterLungeMeleeStopDistance = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeMeleeStop", 128.0));
     bTimedDodgeRadialBlur = ini.GetBoolValue("TimedDodge", "bRadialBlur", true);
     fTimedDodgeBlurStrength = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurStrength", 0.3));
     fTimedDodgeBlurBlendSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurBlendSpeed", 5.0));
@@ -140,6 +147,12 @@ void Settings::LoadSettings() {
     // Clamp values
     fParryWindowDurationMs = std::clamp(fParryWindowDurationMs, 50.0f, 1000.0f);
     fCooldownDurationMs = std::clamp(fCooldownDurationMs, 0.0f, 1000.0f);
+    fTimedDodgeCounterWindowMs = std::clamp(fTimedDodgeCounterWindowMs, 50.0f, 30000.0f);
+    fCounterLungeMeleeStopDistance = std::clamp(fCounterLungeMeleeStopDistance, 32.0f, 512.0f);
+    fTimedDodgeCounterLungeSpeed = std::clamp(fTimedDodgeCounterLungeSpeed, 200.0f, 2000.0f);
+    fTimedDodgeCounterLungeMeleeStopDistance = std::clamp(fTimedDodgeCounterLungeMeleeStopDistance, 32.0f, 512.0f);
+    iCounterLungeCurve = std::clamp(iCounterLungeCurve, 0, 5);
+    iTimedDodgeCounterLungeCurve = std::clamp(iTimedDodgeCounterLungeCurve, 0, 5);
     
     logger::info("Settings loaded successfully");
     logger::info("  ParryWindow: {}ms", fParryWindowDurationMs);
@@ -150,7 +163,8 @@ void Settings::LoadSettings() {
     logger::info("  Slowmo: {} (speed={}, duration={}s)", bEnableSlowmo, fSlowmoSpeed, fSlowmoDuration);
     logger::info("  CounterAttack: {} (window={}s, preventStagger={})", bEnableCounterAttack, fCounterAttackWindow, bPreventPlayerStagger);
     logger::info("  CounterDamage: {} (bonus={}%, timeout={}s)", bEnableCounterDamageBonus, fCounterDamageBonusPercent, fCounterDamageBonusTimeout);
-    logger::info("  CounterLunge: {} (distance={}, speed={})", bEnableCounterLunge, fCounterLungeDistance, fCounterLungeSpeed);
+    logger::info("  CounterLunge: {} (maxDist={}, speed={}, meleeStop={})",
+        bEnableCounterLunge, fCounterLungeDistance, fCounterLungeSpeed, fCounterLungeMeleeStopDistance);
     logger::info("  CounterSlowTime: {} (scale={}, maxDuration={}s, start='{}', end='{}')", 
         bEnableCounterSlowTime, fCounterSlowTimeScale, fCounterSlowTimeMaxDuration, sCounterSlowStartEvent, sCounterSlowEndEvent);
     logger::info("  Cooldown: {} (duration={}ms, ignoreOutsideRange={}, distance={})", 
@@ -162,9 +176,9 @@ void Settings::LoadSettings() {
     logger::info("    Forgiveness: {}ms, Stagger: {}, AttackerSlow: {} (speed={}, dur={}s)",
         fTimedDodgeForgivenessMs, bTimedDodgeStagger, bTimedDodgeAttackerSlow,
         fTimedDodgeAttackerSlowSpeed, fTimedDodgeAttackerSlowDuration);
-    logger::info("    CounterDmg: +{}%, CounterLunge: {}, Sound: {} (vol={}%)",
-        fTimedDodgeCounterDamagePercent, bTimedDodgeCounterLunge, bTimedDodgeSound,
-        fTimedDodgeSoundVolume * 100.0f);
+    logger::info("    CounterWindow: {:.0f}ms, CounterDmg: +{}% (timeout={}s), CounterLunge: {} (speed={} u/s), Sound: {} (vol={}%)",
+        fTimedDodgeCounterWindowMs, fTimedDodgeCounterDamagePercent, fTimedDodgeCounterDamageTimeout,
+        bTimedDodgeCounterLunge, fTimedDodgeCounterLungeSpeed, bTimedDodgeSound, fTimedDodgeSoundVolume * 100.0f);
     logger::info("  Debug: {}", bDebugLogging);
 }
 
@@ -249,6 +263,8 @@ void Settings::SaveSettings() {
     ini.SetBoolValue("CounterLunge", "bEnableCounterLunge", bEnableCounterLunge);
     ini.SetDoubleValue("CounterLunge", "fCounterLungeDistance", fCounterLungeDistance);
     ini.SetDoubleValue("CounterLunge", "fCounterLungeSpeed", fCounterLungeSpeed);
+    ini.SetLongValue("CounterLunge", "iCurve", iCounterLungeCurve);
+    ini.SetDoubleValue("CounterLunge", "fMeleeStopDistance", fCounterLungeMeleeStopDistance);
     
     // Save Counter Slow Time settings
     ini.SetBoolValue("CounterSlowTime", "bEnableCounterSlowTime", bEnableCounterSlowTime);
@@ -276,8 +292,13 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fForgivenessMs", fTimedDodgeForgivenessMs);
     ini.SetBoolValue("TimedDodge", "bIframes", bTimedDodgeIframes);
     ini.SetBoolValue("TimedDodge", "bCounterAttack", bTimedDodgeCounterAttack);
+    ini.SetDoubleValue("TimedDodge", "fCounterWindowMs", fTimedDodgeCounterWindowMs);
     ini.SetDoubleValue("TimedDodge", "fCounterDamagePercent", fTimedDodgeCounterDamagePercent);
+    ini.SetDoubleValue("TimedDodge", "fCounterDamageTimeout", fTimedDodgeCounterDamageTimeout);
     ini.SetBoolValue("TimedDodge", "bCounterLunge", bTimedDodgeCounterLunge);
+    ini.SetDoubleValue("TimedDodge", "fCounterLungeSpeed", fTimedDodgeCounterLungeSpeed);
+    ini.SetLongValue("TimedDodge", "iCounterLungeCurve", iTimedDodgeCounterLungeCurve);
+    ini.SetDoubleValue("TimedDodge", "fCounterLungeMeleeStop", fTimedDodgeCounterLungeMeleeStopDistance);
     ini.SetBoolValue("TimedDodge", "bRadialBlur", bTimedDodgeRadialBlur);
     ini.SetDoubleValue("TimedDodge", "fBlurStrength", fTimedDodgeBlurStrength);
     ini.SetDoubleValue("TimedDodge", "fBlurBlendSpeed", fTimedDodgeBlurBlendSpeed);

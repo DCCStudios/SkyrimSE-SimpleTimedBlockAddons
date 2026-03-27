@@ -253,9 +253,8 @@ void AnimSpeedManager::PlayerAnimationHook::PlayerCharacter_UpdateAnimation(RE::
     // Update counter attack window timer
     CounterAttackState::Update();
     
-    // Note: Lunge movement is handled by the physics hook (LungePhysicsHook)
-    // for proper Havok physics integration
-    
+    // Note: lunge position updates happen in the physics hook (after simulation)
+
     // Update counter slow time (check for timeout)
     CounterSlowTimeState::Update();
     
@@ -1465,32 +1464,64 @@ void CounterAttackState::OnAttackInput()
     }
     
     if (fromTimedDodge) {
-        // Interrupt dodge recovery so the attack animation can play
-        player->NotifyAnimationGraph("IdleForceDefaultState");
-    } else {
-        // Cancel block recoil/stagger so the attack can follow through
-        player->SetGraphVariableBool("IsStaggering", false);
-        player->SetGraphVariableBool("IsRecoiling", false);
-        player->SetGraphVariableBool("IsBlockHit", false);
-        player->SetGraphVariableBool("bIsBlocking", false);
-        player->SetGraphVariableFloat("staggerMagnitude", 0.0f);
+        // End slomo so animations run at full speed
+        if (TimedDodgeState::IsSlomoActive()) {
+            TimedDodgeState::End();
+        }
         
-        player->SetGraphVariableBool("Maxsu_IsBlockHit", false);
-        player->SetGraphVariableBool("bMaxsu_BlockHit", false);
-        player->SetGraphVariableFloat("Maxsu_BlockHitStrength", 0.0f);
+        // Cancel the dodge animation by sending TKDodgeStop — the same event
+        // the dodge clip fires near its end to trigger the idle transition
+        bool cancelled = player->NotifyAnimationGraph("TKDodgeStop");
+        logger::info("[COUNTER] Dodge cancel via TKDodgeStop: {}", cancelled);
         
-        player->NotifyAnimationGraph("staggerStop");
-        player->NotifyAnimationGraph("recoilStop");
-        player->NotifyAnimationGraph("blockStop");
-        player->NotifyAnimationGraph("BlockHitEnd");
+        ApplyDamageBonus();
         
-        player->NotifyAnimationGraph("Maxsu_BlockHitEnd");
-        player->NotifyAnimationGraph("Maxsu_BlockHitInterrupt");
-        player->NotifyAnimationGraph("Maxsu_WeaponBlockHitEnd");
-        player->NotifyAnimationGraph("Maxsu_ShieldBlockHitEnd");
+        RE::Actor* attacker = GetLastAttacker();
+        if (settings->bTimedDodgeCounterLunge) {
+            if (attacker && attacker->Is3DLoaded()) {
+                CounterLungeState::Start(player, attacker);
+                logger::info("[COUNTER] Lunge started toward '{}'", attacker->GetName());
+            } else {
+                logger::info("[COUNTER] Lunge skipped: attacker={}, 3DLoaded={}",
+                    attacker ? attacker->GetName() : "null",
+                    attacker ? attacker->Is3DLoaded() : false);
+            }
+        } else {
+            logger::info("[COUNTER] Lunge disabled by bTimedDodgeCounterLunge setting");
+        }
+        spdlog::default_logger()->flush();
+        
+        if (settings->bDebugLogging) {
+            logger::info("[COUNTER] Timed dodge counter attack executed");
+            RE::DebugNotification("[TD] Counter attack!");
+        }
+        
+        inWindow = false;
+        return;
     }
     
-    // If timed dodge slomo is active, cancel it (counter attack ends the slow-mo)
+    // Timed block path: cancel block recoil/stagger so the attack can follow through
+    player->SetGraphVariableBool("IsStaggering", false);
+    player->SetGraphVariableBool("IsRecoiling", false);
+    player->SetGraphVariableBool("IsBlockHit", false);
+    player->SetGraphVariableBool("bIsBlocking", false);
+    player->SetGraphVariableFloat("staggerMagnitude", 0.0f);
+    
+    player->SetGraphVariableBool("Maxsu_IsBlockHit", false);
+    player->SetGraphVariableBool("bMaxsu_BlockHit", false);
+    player->SetGraphVariableFloat("Maxsu_BlockHitStrength", 0.0f);
+    
+    player->NotifyAnimationGraph("staggerStop");
+    player->NotifyAnimationGraph("recoilStop");
+    player->NotifyAnimationGraph("blockStop");
+    player->NotifyAnimationGraph("BlockHitEnd");
+    
+    player->NotifyAnimationGraph("Maxsu_BlockHitEnd");
+    player->NotifyAnimationGraph("Maxsu_BlockHitInterrupt");
+    player->NotifyAnimationGraph("Maxsu_WeaponBlockHitEnd");
+    player->NotifyAnimationGraph("Maxsu_ShieldBlockHitEnd");
+    
+    // If timed dodge slomo is active, cancel it
     if (TimedDodgeState::IsSlomoActive()) {
         TimedDodgeState::End();
         if (settings->bDebugLogging) {
@@ -1498,26 +1529,24 @@ void CounterAttackState::OnAttackInput()
         }
     }
     
-    // Start lunge toward attacker (timed dodge has its own toggle)
-    bool lungeEnabled = fromTimedDodge ? settings->bTimedDodgeCounterLunge : settings->bEnableCounterLunge;
-    if (lungeEnabled) {
+    // Start lunge toward attacker
+    if (settings->bEnableCounterLunge) {
         RE::Actor* attacker = GetLastAttacker();
         if (attacker && attacker->Is3DLoaded()) {
             CounterLungeState::Start(player, attacker);
         }
     }
     
-    // Apply damage bonus (timed dodge always applies its own bonus, timed block checks its toggle)
-    if (settings->bEnableCounterDamageBonus || fromTimedDodge) {
+    // Apply damage bonus
+    if (settings->bEnableCounterDamageBonus) {
         ApplyDamageBonus();
     }
     
     if (settings->bDebugLogging) {
-        logger::info("[COUNTER] Attack input during counter window - cancelled block animation (vanilla + MaxuBlockOverhaul)");
+        logger::info("[COUNTER] Attack input during counter window - timed block counter");
         RE::DebugNotification("[TB] Counter attack!");
     }
     
-    // Close the window
     inWindow = false;
 }
 
@@ -1530,18 +1559,30 @@ void CounterAttackState::ApplyDamageBonus()
         return;
     }
     
-    // Use timed dodge damage if counter was triggered from a timed dodge
     float damagePercent = fromTimedDodge ? settings->fTimedDodgeCounterDamagePercent : settings->fCounterDamageBonusPercent;
     
     appliedDamageBonus = damagePercent;
     damageBonusActive = true;
     
-    // Set the timeout for damage bonus (starts now, when counter attack is initiated)
-    auto timeoutMs = static_cast<int>(settings->fCounterDamageBonusTimeout * 1000.0f);
+    float timeout = fromTimedDodge ? settings->fTimedDodgeCounterDamageTimeout : settings->fCounterDamageBonusTimeout;
+    auto timeoutMs = static_cast<int>(timeout * 1000.0f);
     damageBonusEndTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     
+    // Boost the player's AttackDamageMult so the bonus goes through the engine's
+    // normal damage pipeline — damage number mods will see the correct total.
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (player) {
+        float mult = damagePercent / 100.0f;
+        player->AsActorValueOwner()->RestoreActorValue(
+            RE::ACTOR_VALUE_MODIFIER::kDamage,
+            RE::ActorValue::kAttackDamageMult,
+            mult);
+        logger::info("[COUNTER DAMAGE] Boosted AttackDamageMult by +{:.2f} (now {:.2f})",
+            mult, player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult));
+    }
+    
     logger::info("[COUNTER DAMAGE] Armed +{:.0f}% damage bonus (timeout: {:.1f}s, source: {})", 
-        damagePercent, settings->fCounterDamageBonusTimeout, fromTimedDodge ? "timed dodge" : "timed block");
+        damagePercent, timeout, fromTimedDodge ? "timed dodge" : "timed block");
     spdlog::default_logger()->flush();
     
     if (settings->bDebugLogging) {
@@ -1552,7 +1593,19 @@ void CounterAttackState::ApplyDamageBonus()
 void CounterAttackState::RemoveDamageBonus()
 {
     if (!damageBonusActive) {
-        return;  // Not active
+        return;
+    }
+    
+    // Revert the AttackDamageMult boost we applied
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (player && appliedDamageBonus > 0.0f) {
+        float mult = appliedDamageBonus / 100.0f;
+        player->AsActorValueOwner()->RestoreActorValue(
+            RE::ACTOR_VALUE_MODIFIER::kDamage,
+            RE::ActorValue::kAttackDamageMult,
+            -mult);
+        logger::info("[COUNTER DAMAGE] Reverted AttackDamageMult by -{:.2f} (now {:.2f})",
+            mult, player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult));
     }
     
     logger::info("[COUNTER DAMAGE] Damage bonus cleared (was +{:.0f}%)", appliedDamageBonus);
@@ -1571,6 +1624,67 @@ bool CounterAttackState::IsDamageBonusActive()
 // Counter Attack Input Handler
 //=============================================================================
 
+namespace OCPAKeys
+{
+    static inline std::int32_t paKey{ -1 };
+    static inline std::int32_t dualPaKey{ -1 };
+    static inline bool loaded{ false };
+
+    void Load()
+    {
+        if (loaded) return;
+        loaded = true;
+
+        std::string path = "Data\\MCM\\Config\\OCPA\\settings.ini";
+        if (std::filesystem::exists("Data\\MCM\\Settings\\OCPA.ini")) {
+            path = "Data\\MCM\\Settings\\OCPA.ini";
+        }
+
+        if (!std::filesystem::exists(path)) {
+            logger::info("[OCPA] No OCPA INI found — power attack key detection disabled");
+            return;
+        }
+
+        CSimpleIniA ini;
+        if (ini.LoadFile(path.c_str()) >= 0) {
+            paKey     = std::atoi(ini.GetValue("General",    "iKeycode", "257"));
+            dualPaKey = std::atoi(ini.GetValue("DualAttack", "iKeycode", "257"));
+            logger::info("[OCPA] Loaded power attack keys: paKey={}, dualPaKey={}", paKey, dualPaKey);
+        }
+    }
+
+    // Convert a ButtonEvent to OCPA's unified keycode scheme:
+    //   0-255 = keyboard (DX scan codes), 256-265 = mouse, 266-281 = gamepad
+    std::int32_t ButtonToUnifiedKey(RE::ButtonEvent* btn)
+    {
+        auto device = btn->GetDevice();
+        auto id     = static_cast<std::int32_t>(btn->GetIDCode());
+
+        switch (device) {
+        case RE::INPUT_DEVICE::kKeyboard:
+            return id;
+        case RE::INPUT_DEVICE::kMouse:
+            return 256 + id;
+        case RE::INPUT_DEVICE::kGamepad: {
+            // OCPA converts gamepad mask to sequential index (same as SKSE convention)
+            std::uint32_t mask = static_cast<std::uint32_t>(id);
+            std::int32_t idx = 266;
+            while (mask > 1 && idx < 282) { mask >>= 1; ++idx; }
+            return idx;
+        }
+        default:
+            return -1;
+        }
+    }
+
+    bool IsOCPAKey(RE::ButtonEvent* btn)
+    {
+        if (paKey < 0 && dualPaKey < 0) return false;
+        std::int32_t key = ButtonToUnifiedKey(btn);
+        return (key == paKey || key == dualPaKey);
+    }
+}
+
 CounterAttackInputHandler* CounterAttackInputHandler::GetSingleton()
 {
     static CounterAttackInputHandler singleton;
@@ -1579,6 +1693,8 @@ CounterAttackInputHandler* CounterAttackInputHandler::GetSingleton()
 
 void CounterAttackInputHandler::Register()
 {
+    OCPAKeys::Load();
+
     auto* inputEventSource = RE::BSInputDeviceManager::GetSingleton();
     if (inputEventSource) {
         inputEventSource->AddEventSink(GetSingleton());
@@ -1617,22 +1733,28 @@ RE::BSEventNotifyControl CounterAttackInputHandler::ProcessEvent(
             continue;
         }
         
-        // Get the control mapped to this input
+        // Check standard Skyrim attack controls
+        bool isAttackInput = false;
         auto* controlMap = RE::ControlMap::GetSingleton();
-        if (!controlMap) {
-            continue;
+        if (controlMap) {
+            std::string_view userEvent = controlMap->GetUserEventName(
+                buttonEvent->GetIDCode(), 
+                buttonEvent->GetDevice(), 
+                RE::ControlMap::InputContextID::kGameplay
+            );
+            
+            if (userEvent == "Right Attack/Block" || userEvent == "Left Attack/Block" ||
+                userEvent == "Attack" || userEvent == "Power Attack") {
+                isAttackInput = true;
+            }
         }
         
-        // Check if this is an attack input (right or left attack)
-        std::string_view userEvent = controlMap->GetUserEventName(
-            buttonEvent->GetIDCode(), 
-            buttonEvent->GetDevice(), 
-            RE::ControlMap::InputContextID::kGameplay
-        );
+        // Also check OneClickPowerAttack's custom power attack key
+        if (!isAttackInput && OCPAKeys::IsOCPAKey(buttonEvent)) {
+            isAttackInput = true;
+        }
         
-        if (userEvent == "Right Attack/Block" || userEvent == "Left Attack/Block" ||
-            userEvent == "Attack" || userEvent == "Power Attack") {
-            // Attack input detected during counter window
+        if (isAttackInput) {
             CounterAttackState::OnAttackInput();
             break;
         }
@@ -1652,6 +1774,9 @@ void CounterLungeState::Start(RE::Actor* player, RE::Actor* target)
     }
     
     auto* settings = Settings::GetSingleton();
+    const float meleeStop = CounterAttackState::fromTimedDodge
+        ? settings->fTimedDodgeCounterLungeMeleeStopDistance
+        : settings->fCounterLungeMeleeStopDistance;
     
     startPos = player->GetPosition();
     RE::NiPoint3 targetPos = target->GetPosition();
@@ -1660,32 +1785,50 @@ void CounterLungeState::Start(RE::Actor* player, RE::Actor* target)
     diff.z = 0.0f;
     float distance = diff.Length();
     
-    // Already within melee range, no lunge needed
-    if (distance <= MELEE_STOP_DISTANCE) {
+    // Already within stop distance, no lunge needed
+    if (distance <= meleeStop) {
         if (settings->bDebugLogging) {
-            logger::info("[LUNGE] Already in melee range ({:.1f} <= {:.1f}), skipping", distance, MELEE_STOP_DISTANCE);
+            logger::info("[LUNGE] Already within stop distance ({:.1f} <= {:.1f}), skipping", distance, meleeStop);
         }
         return;
     }
     
     targetHandle = target->GetHandle();
+    meleeStopDistance = meleeStop;  // cache for ApplyVelocity
     
-    // Travel enough to reach melee range, capped by the max lunge distance setting
-    float desiredTravel = distance - MELEE_STOP_DISTANCE;
+    // Travel enough to reach stop distance, capped by the max lunge distance setting
+    float desiredTravel = distance - meleeStop;
     totalDistance = (std::min)(desiredTravel, settings->fCounterLungeDistance);
     
-    // Duration from smoothstep: peak velocity = 1.5 * D/T, so T = 1.5 * D / peakSpeed
-    duration = 1.5f * totalDistance / settings->fCounterLungeSpeed;
-    if (duration < 0.1f) duration = 0.1f;
-    if (duration > 1.0f) duration = 1.0f;
+    const float lungeSpeed = CounterAttackState::fromTimedDodge ? settings->fTimedDodgeCounterLungeSpeed
+                                                                : settings->fCounterLungeSpeed;
+    curveType = CounterAttackState::fromTimedDodge ? settings->iTimedDodgeCounterLungeCurve
+                                                   : settings->iCounterLungeCurve;
+    
+    // Peak of each velocity curve profile f(t) where ∫f(t)dt = 1 over [0,1]:
+    //   Bell (6t(1-t)):  peak = 1.5   @ t=0.5
+    //   Linear (1):      peak = 1.0
+    //   EaseIn (2t):     peak = 2.0   @ t=1
+    //   EaseOut (2(1-t)):peak = 2.0   @ t=0
+    //   CubicIn (3t²):   peak = 3.0   @ t=1
+    //   CubicOut(3(1-t)²):peak= 3.0   @ t=0
+    static constexpr float curvePeaks[] = { 1.5f, 1.0f, 2.0f, 2.0f, 3.0f, 3.0f };
+    int clampedCurve = curveType < 0 ? 0 : (curveType > 5 ? 5 : curveType);
+    float peakFactor = curvePeaks[clampedCurve];
+    
+    // duration chosen so peak velocity == lungeSpeed
+    duration = peakFactor * totalDistance / lungeSpeed;
+    if (duration < 0.05f) duration = 0.05f;
+    if (duration > 2.0f)  duration = 2.0f;
     
     elapsed = 0.0f;
+    loggedFirstFrame = false;
     active = true;
     
-    if (settings->bDebugLogging) {
-        logger::info("[LUNGE] Started: target='{}', dist={:.0f}, travel={:.0f}, duration={:.2f}s",
-            target->GetName(), distance, totalDistance, duration);
-    }
+    static const char* curveNames[] = { "Bell", "Linear", "EaseIn", "EaseOut", "CubicIn", "CubicOut" };
+    logger::info("[LUNGE] Started: target='{}', dist={:.0f}, travel={:.0f}, duration={:.2f}s, curve={}",
+        target->GetName(), distance, totalDistance, duration, curveNames[clampedCurve]);
+    spdlog::default_logger()->flush();
 }
 
 void CounterLungeState::ApplyVelocity(RE::bhkCharacterController* controller, float deltaTime)
@@ -1693,70 +1836,131 @@ void CounterLungeState::ApplyVelocity(RE::bhkCharacterController* controller, fl
     if (!active || !controller || deltaTime <= 0.0f) {
         return;
     }
-    
+
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
         Cancel();
         return;
     }
-    
-    if (player->GetCharController() != controller) {
-        return;
-    }
-    
-    if (controller->context.currentState != RE::hkpCharacterStateType::kOnGround) {
-        Cancel();
-        return;
-    }
-    
+
     auto targetPtr = targetHandle.get();
     RE::Actor* target = targetPtr.get();
     if (!target || !target->Is3DLoaded()) {
         Cancel();
         return;
     }
-    
+
     RE::NiPoint3 currentPos = player->GetPosition();
-    RE::NiPoint3 targetPos = target->GetPosition();
-    
+    RE::NiPoint3 targetPos  = target->GetPosition();
+
     RE::NiPoint3 toTarget = targetPos - currentPos;
     toTarget.z = 0.0f;
     float distanceToTarget = toTarget.Length();
-    
-    // Reached melee range
-    if (distanceToTarget <= MELEE_STOP_DISTANCE) {
+
+    if (!loggedFirstFrame) {
+        loggedFirstFrame = true;
+        logger::info("[LUNGE] First physics frame: dist={:.0f}, stopDist={:.0f}, dt={:.4f}",
+            distanceToTarget, meleeStopDistance, deltaTime);
+        spdlog::default_logger()->flush();
+    }
+
+    if (distanceToTarget <= meleeStopDistance) {
+        logger::info("[LUNGE] Reached stop distance ({:.0f} <= {:.0f}), stopping", distanceToTarget, meleeStopDistance);
         Cancel();
         return;
     }
-    
+
     elapsed += deltaTime;
     float t = elapsed / duration;
-    
+
     if (t >= 1.0f) {
         Cancel();
         return;
     }
-    
-    // Smoothstep bell-curve velocity: 6t(1-t)
-    // Starts at 0, peaks at t=0.5, returns to 0 — no jerks at either end
-    float bellCurve = 6.0f * t * (1.0f - t);
-    float currentSpeed = (totalDistance / duration) * bellCurve;
-    
-    // Convert game units/s to Havok units/s (1 Havok unit ≈ 69.99 game units)
-    constexpr float HAVOK_SCALE = 1.0f / 69.99f;
-    float havokSpeed = currentSpeed * HAVOK_SCALE;
-    
-    // Direction to target in Skyrim world space
+
+    // Velocity profile f(t) — each integrates to 1 over [0,1]
+    float fvel;
+    switch (curveType) {
+    case 1:  fvel = 1.0f;                                      break;  // Linear
+    case 2:  fvel = 2.0f * t;                                  break;  // Ease In
+    case 3:  fvel = 2.0f * (1.0f - t);                        break;  // Ease Out
+    case 4:  fvel = 3.0f * t * t;                              break;  // Cubic In
+    case 5:  fvel = 3.0f * (1.0f - t) * (1.0f - t);           break;  // Cubic Out
+    default: fvel = 6.0f * t * (1.0f - t);                    break;  // Bell
+    }
+    float currentSpeed = (totalDistance / duration) * fvel;
+
+    // --- Horizontal: velocityMod in character-local space (proven to work) ---
     RE::NiPoint3 worldDir = toTarget / distanceToTarget;
-    
-    // velocityMod is in Havok WORLD space:
-    //   [0] = Havok X = Skyrim X (east/west)
-    //   [1] = Havok Y = Skyrim Z (vertical) — keep at 0
-    //   [2] = Havok Z = Skyrim Y (north/south)
+    float heading = player->GetAngleZ();
+    float sinH = std::sin(heading);
+    float cosH = std::cos(heading);
+
+    float localForward = worldDir.x * sinH + worldDir.y * cosH;
+    float localStrafe  = worldDir.x * cosH - worldDir.y * sinH;
+
     auto* vel = reinterpret_cast<float*>(&(controller->velocityMod));
-    vel[0] = havokSpeed * worldDir.x;
-    vel[1] = 0.0f;
-    vel[2] = havokSpeed * worldDir.y;
+    vel[0] = currentSpeed * localStrafe;
+    vel[1] = currentSpeed * localForward;
+
+    // --- Vertical: raycast to find ground Z, set velocityMod[2] to pull toward it ---
+    // Without this the character gets launched off ledge edges by collision normals.
+    float groundZ = currentPos.z;
+    bool  hitGround = false;
+
+    auto* cell = player->GetParentCell();
+    if (cell) {
+        auto* bWorld = cell->GetbhkWorld();
+        if (bWorld) {
+            const float worldScale = RE::bhkWorld::GetWorldScale();
+
+            const float probeFromZ = currentPos.z + 64.0f;
+            const float probeToZ   = currentPos.z - 4096.0f;
+
+            RE::hkpWorldRayCastInput  rayIn;
+            RE::hkpWorldRayCastOutput rayOut;
+
+            std::uint32_t filterInfo = 0;
+            player->GetCollisionFilterInfo(filterInfo);
+            const auto group = static_cast<std::uint32_t>(filterInfo >> 16);
+            rayIn.filterInfo =
+                (group << 16) | static_cast<std::uint32_t>(RE::COL_LAYER::kCharController);
+
+            rayIn.from.quad.m128_f32[0] = currentPos.x * worldScale;
+            rayIn.from.quad.m128_f32[1] = currentPos.y * worldScale;
+            rayIn.from.quad.m128_f32[2] = probeFromZ * worldScale;
+            rayIn.from.quad.m128_f32[3] = 0.0f;
+
+            rayIn.to.quad.m128_f32[0] = currentPos.x * worldScale;
+            rayIn.to.quad.m128_f32[1] = currentPos.y * worldScale;
+            rayIn.to.quad.m128_f32[2] = probeToZ * worldScale;
+            rayIn.to.quad.m128_f32[3] = 0.0f;
+
+            {
+                RE::BSReadLockGuard lock(bWorld->worldLock);
+                bWorld->GetWorld1()->CastRay(rayIn, rayOut);
+            }
+
+            if (rayOut.HasHit()) {
+                groundZ  = probeFromZ + (probeToZ - probeFromZ) * rayOut.hitFraction;
+                hitGround = true;
+            }
+        }
+    }
+
+    if (hitGround) {
+        float zDelta = groundZ - currentPos.z;
+        // Compute the vertical velocity needed to reach ground Z this frame.
+        // Clamp so we don't overshoot on big drops; ground collision stops us anyway.
+        float desiredZVel = zDelta / deltaTime;
+        // Cap the downward pull so slopes feel natural (max ~2000 units/s down)
+        if (desiredZVel < -2000.0f) desiredZVel = -2000.0f;
+        // Never allow upward — ground collision handles walking up slopes naturally.
+        if (desiredZVel > 0.0f) desiredZVel = 0.0f;
+        vel[2] = desiredZVel;
+    } else {
+        vel[2] = 0.0f;
+    }
 }
 
 bool CounterLungeState::IsActive()
@@ -1769,16 +1973,13 @@ void CounterLungeState::Cancel()
     bool wasActive = active;
     
     if (active) {
-        auto* settings = Settings::GetSingleton();
-        if (settings->bDebugLogging) {
-            logger::info("[LUNGE] Ended after {:.3f}s, traveled some distance", elapsed);
-        }
+        logger::info("[LUNGE] Ended after {:.3f}s", elapsed);
+        spdlog::default_logger()->flush();
     }
     
     active = false;
     elapsed = 0.0f;
     
-    // Clear all velocityMod components to stop movement
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (player) {
         if (auto* controller = player->GetCharController()) {
@@ -1811,32 +2012,61 @@ void CounterLungeState::Cancel()
 namespace LungePhysicsHook
 {
     // Signature of bhkCharacterStateOnGround::SimulateStatePhysics
-    using SimulateStatePhysics_t = void(RE::bhkCharacterStateOnGround*, RE::bhkCharacterController*);
+    using SimulateStatePhysics_t    = void(RE::bhkCharacterStateOnGround*, RE::bhkCharacterController*);
+    using SimulateStatePhysicsAir_t = void(RE::bhkCharacterStateInAir*,     RE::bhkCharacterController*);
     
-    // Pointer to the original vfunc
-    static REL::Relocation<SimulateStatePhysics_t> g_originalSimulate;
-    
-    // Our hook - runs BEFORE the original physics simulation
+    static REL::Relocation<SimulateStatePhysics_t>    g_originalSimulate;
+    static REL::Relocation<SimulateStatePhysicsAir_t> g_originalSimulateAir;
+
     void SimulateStatePhysics_Hook(RE::bhkCharacterStateOnGround* a_this, RE::bhkCharacterController* a_controller)
     {
-        // Apply lunge velocity if active
         if (a_controller && CounterLungeState::IsActive()) {
-            float deltaTime = a_controller->stepInfo.deltaTime;
-            CounterLungeState::ApplyVelocity(a_controller, deltaTime);
+            // Set velocityMod BEFORE physics reads it.
+            // XY = lunge horizontal, Z = raycast ground-pull.
+            CounterLungeState::ApplyVelocity(a_controller, a_controller->stepInfo.deltaTime);
         }
-        
-        // Run the original ground physics
+
         g_originalSimulate(a_this, a_controller);
+
+        if (a_controller && CounterLungeState::IsActive()) {
+            // After physics, kill any residual upward proxy velocity that ledge-edge
+            // collision normals may have introduced despite our downward velocityMod.
+            RE::hkVector4 vel;
+            a_controller->GetLinearVelocityImpl(vel);
+            if (vel.quad.m128_f32[2] > 0.0f) {
+                vel.quad.m128_f32[2] = 0.0f;
+                a_controller->SetLinearVelocityImpl(vel);
+            }
+        }
+    }
+
+    void SimulateStatePhysics_Air_Hook(RE::bhkCharacterStateInAir* a_this, RE::bhkCharacterController* a_controller)
+    {
+        if (a_controller && CounterLungeState::IsActive()) {
+            CounterLungeState::ApplyVelocity(a_controller, a_controller->stepInfo.deltaTime);
+        }
+
+        g_originalSimulateAir(a_this, a_controller);
+
+        if (a_controller && CounterLungeState::IsActive()) {
+            RE::hkVector4 vel;
+            a_controller->GetLinearVelocityImpl(vel);
+            if (vel.quad.m128_f32[2] > 0.0f) {
+                vel.quad.m128_f32[2] = 0.0f;
+                a_controller->SetLinearVelocityImpl(vel);
+            }
+        }
     }
     
     void Install()
     {
-        // Hook vfunc index 8 on bhkCharacterStateOnGround's vtable
-        // Same slot used by CustomDodge for SimulateStatePhysics
         REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_bhkCharacterStateOnGround[0] };
         g_originalSimulate = vtbl.write_vfunc(8, SimulateStatePhysics_Hook);
+
+        REL::Relocation<std::uintptr_t> vtblAir{ RE::VTABLE_bhkCharacterStateInAir[0] };
+        g_originalSimulateAir = vtblAir.write_vfunc(8, SimulateStatePhysics_Air_Hook);
         
-        logger::info("Lunge physics hook installed");
+        logger::info("Lunge physics hooks installed (ground + air)");
     }
 }
 
@@ -2007,7 +2237,7 @@ RE::BSEventNotifyControl CounterAnimEventHandler::ProcessEvent(
     
     // Forward animation events to the counter slow time state
     CounterSlowTimeState::OnAnimEvent(a_event->tag.c_str());
-    
+
     return RE::BSEventNotifyControl::kContinue;
 }
 
@@ -2058,68 +2288,26 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
         return RE::BSEventNotifyControl::kContinue;
     }
     
-    // Player landed a melee hit - apply bonus damage directly
+    // Player landed a melee hit while counter damage bonus is active.
+    // The bonus was already applied via kAttackDamageMult, so the engine's
+    // damage pipeline (and any damage number mods) already includes it.
+    // We just need to clean up and play the sound.
     RE::Actor* target = a_event->target ? a_event->target->As<RE::Actor>() : nullptr;
-    
-    if (!target) {
-        return RE::BSEventNotifyControl::kContinue;
-    }
-    
+
     auto* settings = Settings::GetSingleton();
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    
-    // Calculate the bonus damage based on the weapon's base damage
-    float baseDamage = 0.0f;
-    auto* weapon = player ? player->GetEquippedObject(false) : nullptr;  // Right hand
-    if (weapon && weapon->IsWeapon()) {
-        auto* weap = weapon->As<RE::TESObjectWEAP>();
-        if (weap) {
-            baseDamage = static_cast<float>(weap->GetAttackDamage());
-        }
+
+    logger::info("[COUNTER DAMAGE] Counter hit landed on '{}' with +{:.0f}% bonus (via AttackDamageMult)",
+        target ? target->GetName() : "unknown", CounterAttackState::appliedDamageBonus);
+    spdlog::default_logger()->flush();
+
+    if (settings->bDebugLogging) {
+        RE::DebugNotification(
+            fmt::format("[TB] Counter! +{:.0f}% damage", CounterAttackState::appliedDamageBonus).c_str());
     }
-    
-    // If no weapon or unarmed, use a base value
-    if (baseDamage <= 0.0f) {
-        baseDamage = 10.0f;  // Unarmed base
-    }
-    
-    // Apply the player's damage bonuses (strength, perks, etc.)
-    if (player) {
-        float damageMult = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult);
-        baseDamage *= damageMult;
-    }
-    
-    // Use the armed bonus (may differ from settings if triggered from timed dodge)
-    float bonusPercent = CounterAttackState::appliedDamageBonus / 100.0f;
-    float bonusDamage = baseDamage * bonusPercent;
-    
-    // Apply the bonus damage directly to the target
-    if (bonusDamage > 0.0f) {
-        float targetHealthBefore = target->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
-        
-        target->AsActorValueOwner()->RestoreActorValue(
-            RE::ACTOR_VALUE_MODIFIER::kDamage,
-            RE::ActorValue::kHealth,
-            -bonusDamage
-        );
-        
-        float targetHealthAfter = target->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
-        
-        logger::info("[COUNTER DAMAGE] Hit '{}': Base damage ~{:.1f}, Bonus +{:.0f}% = +{:.1f} extra damage",
-            target->GetName(), baseDamage, CounterAttackState::appliedDamageBonus, bonusDamage);
-        logger::info("[COUNTER DAMAGE] Target health: {:.1f} -> {:.1f} (actual damage applied: {:.1f})",
-            targetHealthBefore, targetHealthAfter, targetHealthBefore - targetHealthAfter);
-        spdlog::default_logger()->flush();
-        
-        if (settings->bDebugLogging) {
-            RE::DebugNotification(fmt::format("[TB] Counter! +{:.0f} damage", bonusDamage).c_str());
-        }
-        
-        // Play counter strike sound
-        PlayCounterStrikeSound();
-    }
-    
-    // Remove the damage bonus after applying it
+
+    PlayCounterStrikeSound();
+
+    // Revert the AttackDamageMult boost now that the hit has landed
     CounterAttackState::RemoveDamageBonus();
     
     return RE::BSEventNotifyControl::kContinue;
@@ -2246,6 +2434,7 @@ void TimedDodgeState::Start(RE::Actor* attacker)
     if (settings->bTimedDodgeIframes) {
         iframesActive = true;
         dodgeIframesEnded = false;
+        counterWindowOpened = false;
     }
     
     // Start radial blur (set target, let Update() handle fade-in)
@@ -2256,12 +2445,12 @@ void TimedDodgeState::Start(RE::Actor* attacker)
     // Start cooldown immediately (not stackable)
     StartCooldown();
     
-    // Open counter attack window for timed dodge (independent of timed block counter settings)
+    // Open counter attack window (ends early when fTimedDodgeCounterWindowMs elapses, or slomo ends—whichever is first)
     if (settings->bTimedDodgeCounterAttack) {
         CounterAttackState::inWindow = true;
         CounterAttackState::fromTimedDodge = true;
-        CounterAttackState::windowEndTime = std::chrono::steady_clock::now() + 
-            std::chrono::milliseconds(static_cast<long long>(settings->fTimedDodgeSlomoDuration * 1000.0f));
+        CounterAttackState::windowEndTime = now + std::chrono::milliseconds(
+            static_cast<long long>(settings->fTimedDodgeCounterWindowMs));
         if (attacker) {
             CounterAttackState::lastAttackerHandle = attacker->GetHandle();
         }
@@ -2315,6 +2504,7 @@ void TimedDodgeState::End()
         }
         iframesActive = false;
         dodgeIframesEnded = false;
+        counterWindowOpened = false;
     }
     
     // Start blur fade-out (let Update() handle the actual blending)
@@ -2395,12 +2585,10 @@ void TimedDodgeState::Update()
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (player) {
             if (!dodgeIframesEnded) {
-                // Wait for the dodge's natural i-frames to end
                 bool bInIframe = false;
                 player->GetGraphVariableBool("bInIframe", bInIframe);
                 if (!bInIframe) {
                     dodgeIframesEnded = true;
-                    // Snapshot health for fallback at the moment we take over
                     auto* avOwner = player->AsActorValueOwner();
                     if (avOwner) {
                         trackedHealth = avOwner->GetActorValue(RE::ActorValue::kHealth);
@@ -2412,7 +2600,6 @@ void TimedDodgeState::Update()
             }
             
             if (dodgeIframesEnded) {
-                // We own the graph variables now - set them each frame
                 player->SetGraphVariableBool("bIframeActive", true);
                 player->SetGraphVariableBool("bInIframe", true);
             }
