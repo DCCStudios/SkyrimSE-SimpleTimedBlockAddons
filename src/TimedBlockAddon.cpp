@@ -18,6 +18,20 @@
 // Alias for Windows PlaySound
 #define WindowsPlaySound ::PlaySoundW
 
+namespace
+{
+	// vcpkg CommonLibSSE headers omit TESDataHandler::AddFormToDataHandler; engine offsets match CommonLibSSE src.
+	bool AddFormToDataHandler(RE::TESDataHandler* a_handler, RE::TESForm* a_form)
+	{
+		if (!a_handler || !a_form) {
+			return false;
+		}
+		using func_t = bool(RE::TESDataHandler*, RE::TESForm*);
+		REL::Relocation<func_t> func{ RELOCATION_ID(13597, 13693) };
+		return func(a_handler, a_form);
+	}
+}
+
 //=============================================================================
 // RNG Utility - Random number generation for chance-based mechanics
 //=============================================================================
@@ -704,6 +718,9 @@ bool TimedBlockAddon::LoadForms() {
     RE::DebugNotification(fmt::format("[TB Addon] Parry window: {:.0f}ms -> {:.0f}ms", 
         originalTaperDuration * 1000.0f, settings->fParryWindowDurationMs).c_str());
     
+    // Fix "Lookup Failed" in the active effects UI by setting a proper description
+    mgef_parry_window->magicItemDescription = "Timed block parry window active.";
+
     logger::debug("Found parry window effect: {}", mgef_parry_window->GetName());
     return true;
 }
@@ -1435,7 +1452,8 @@ void CounterAttackState::Update()
     
     // Check damage bonus timeout (uses configurable timeout)
     if (damageBonusActive && now >= damageBonusEndTime) {
-        logger::info("[COUNTER DAMAGE] Damage bonus timed out ({:.1f}s)", settings->fCounterDamageBonusTimeout);
+        const float timeoutLogged = fromTimedDodge ? settings->fTimedDodgeCounterDamageTimeout : settings->fCounterDamageBonusTimeout;
+        logger::info("[COUNTER DAMAGE] Damage bonus timed out ({:.1f}s)", timeoutLogged);
         spdlog::default_logger()->flush();
         
         if (settings->bDebugLogging) {
@@ -1461,6 +1479,24 @@ void CounterAttackState::OnAttackInput()
     
     if (!player) {
         return;
+    }
+
+    // Only allow counter attacks with melee weapons or fists
+    auto* rightEquipped = player->GetEquippedObject(false);
+    if (rightEquipped) {
+        if (rightEquipped->IsWeapon()) {
+            auto* weap = rightEquipped->As<RE::TESObjectWEAP>();
+            if (weap) {
+                auto type = weap->GetWeaponType();
+                if (type == RE::WEAPON_TYPE::kBow ||
+                    type == RE::WEAPON_TYPE::kCrossbow ||
+                    type == RE::WEAPON_TYPE::kStaff) {
+                    return;
+                }
+            }
+        } else {
+            return;
+        }
     }
     
     if (fromTimedDodge) {
@@ -1489,6 +1525,30 @@ void CounterAttackState::OnAttackInput()
         } else {
             logger::info("[COUNTER] Lunge disabled by bTimedDodgeCounterLunge setting");
         }
+
+        // Explicitly trigger the right-hand attack on the next frame.
+        // After TKDodgeStop the graph needs one tick to leave the dodge state;
+        // with weapon+spell combos the original button press doesn't propagate
+        // into an attack on its own (unlike weapon+empty/shield).
+        RE::ActorHandle playerHandle = player->GetHandle();
+        SKSE::GetTaskInterface()->AddTask([playerHandle]() {
+            auto playerPtr = playerHandle.get();
+            if (auto* p = playerPtr.get()) {
+                using PerformAction_t = bool(RE::TESActionData*);
+                REL::Relocation<PerformAction_t> performAction{ RELOCATION_ID(40551, 41557) };
+
+                auto* data = RE::TESActionData::Create();
+                if (data) {
+                    data->source = RE::NiPointer<RE::TESObjectREFR>(p);
+                    data->action = RE::TESForm::LookupByID<RE::BGSAction>(0x13005);
+                    if (data->action) {
+                        performAction(data);
+                    }
+                    delete data;
+                }
+            }
+        });
+
         spdlog::default_logger()->flush();
         
         if (settings->bDebugLogging) {
@@ -1550,41 +1610,117 @@ void CounterAttackState::OnAttackInput()
     inWindow = false;
 }
 
+bool CounterAttackState::CreateCounterDamageForms()
+{
+    if (counterMGEF && counterSpell) {
+        return true;
+    }
+
+    auto* mgefFactory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::EffectSetting>();
+    auto* spelFactory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::SpellItem>();
+    if (!mgefFactory || !spelFactory) {
+        logger::error("[COUNTER DAMAGE] Form factory unavailable (MGEF and/or SPEL)");
+        return false;
+    }
+
+    auto* dh = RE::TESDataHandler::GetSingleton();
+
+    if (!counterMGEF) {
+        auto* mgefForm = mgefFactory->Create();
+        counterMGEF = mgefForm ? mgefForm->As<RE::EffectSetting>() : nullptr;
+        if (!counterMGEF) {
+            logger::error("[COUNTER DAMAGE] Failed to allocate EffectSetting");
+            return false;
+        }
+
+        counterMGEF->fullName = "STBA Counter Strike";
+        counterMGEF->magicItemDescription = "Counter strike bonus damage.";
+
+        auto& md = counterMGEF->data;
+        md.flags.set(RE::EffectSetting::EffectSettingData::Flag::kHostile);
+        md.flags.set(RE::EffectSetting::EffectSettingData::Flag::kDetrimental);
+        md.flags.set(RE::EffectSetting::EffectSettingData::Flag::kHideInUI);
+        md.baseCost = 0.0f;
+        md.archetype = RE::EffectArchetypes::ArchetypeID::kValueModifier;
+        md.primaryAV = RE::ActorValue::kHealth;
+        md.associatedSkill = RE::ActorValue::kNone;
+        md.resistVariable = RE::ActorValue::kNone;
+        md.castingType = RE::MagicSystem::CastingType::kFireAndForget;
+        md.delivery = RE::MagicSystem::Delivery::kTargetActor;
+
+        if (dh && !AddFormToDataHandler(dh, counterMGEF)) {
+            logger::warn("[COUNTER DAMAGE] AddFormToDataHandler failed for MGEF");
+        }
+
+        logger::info("[COUNTER DAMAGE] MGEF created — Damage Health, archetype={}, primaryAV={}, flags=0x{:08X}",
+            static_cast<int>(md.archetype), static_cast<int>(md.primaryAV),
+            md.flags.underlying());
+    }
+
+    if (!counterSpell) {
+        if (!counterMGEF) {
+            logger::error("[COUNTER DAMAGE] Missing MGEF — cannot build counter spell");
+            return false;
+        }
+
+        auto* spelForm = spelFactory->Create();
+        counterSpell = spelForm ? spelForm->As<RE::SpellItem>() : nullptr;
+        if (!counterSpell) {
+            logger::error("[COUNTER DAMAGE] Failed to allocate SpellItem");
+            return false;
+        }
+
+        counterSpell->fullName = "STBA Counter Strike";
+        counterSpell->data.spellType = RE::MagicSystem::SpellType::kSpell;
+        counterSpell->data.castingType = RE::MagicSystem::CastingType::kFireAndForget;
+        counterSpell->data.delivery = RE::MagicSystem::Delivery::kTargetActor;
+        counterSpell->data.chargeTime = 0.0f;
+        counterSpell->data.castDuration = 0.0f;
+        counterSpell->data.range = 0.0f;
+        counterSpell->data.costOverride = 0;
+        counterSpell->data.flags.set(RE::SpellItem::SpellFlag::kCostOverride);
+
+        auto* eff = new RE::Effect();
+        eff->baseEffect = counterMGEF;
+        eff->effectItem.magnitude = 0.0f;
+        eff->effectItem.duration = 0;
+        eff->effectItem.area = 0;
+        eff->cost = 0.0f;
+        counterSpell->effects.push_back(eff);
+
+        if (dh && !AddFormToDataHandler(dh, counterSpell)) {
+            logger::warn("[COUNTER DAMAGE] AddFormToDataHandler failed for SPEL");
+        }
+
+        logger::info("[COUNTER DAMAGE] Runtime forms OK — MGEF {:08X}, SPEL {:08X}",
+            counterMGEF->GetFormID(), counterSpell->GetFormID());
+    }
+
+    return counterMGEF != nullptr && counterSpell != nullptr;
+}
+
 void CounterAttackState::ApplyDamageBonus()
 {
     auto* settings = Settings::GetSingleton();
-    
+
     if (damageBonusActive) {
         logger::info("[COUNTER DAMAGE] Bonus already active, skipping");
         return;
     }
-    
+
     float damagePercent = fromTimedDodge ? settings->fTimedDodgeCounterDamagePercent : settings->fCounterDamageBonusPercent;
-    
+
     appliedDamageBonus = damagePercent;
     damageBonusActive = true;
-    
+
     float timeout = fromTimedDodge ? settings->fTimedDodgeCounterDamageTimeout : settings->fCounterDamageBonusTimeout;
     auto timeoutMs = static_cast<int>(timeout * 1000.0f);
     damageBonusEndTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    
-    // Boost the player's AttackDamageMult so the bonus goes through the engine's
-    // normal damage pipeline — damage number mods will see the correct total.
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    if (player) {
-        float mult = damagePercent / 100.0f;
-        player->AsActorValueOwner()->RestoreActorValue(
-            RE::ACTOR_VALUE_MODIFIER::kDamage,
-            RE::ActorValue::kAttackDamageMult,
-            mult);
-        logger::info("[COUNTER DAMAGE] Boosted AttackDamageMult by +{:.2f} (now {:.2f})",
-            mult, player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult));
-    }
-    
-    logger::info("[COUNTER DAMAGE] Armed +{:.0f}% damage bonus (timeout: {:.1f}s, source: {})", 
+
+    logger::info("[COUNTER DAMAGE] Armed +{:.0f}% bonus (timeout {:.1f}s, source {})",
         damagePercent, timeout, fromTimedDodge ? "timed dodge" : "timed block");
     spdlog::default_logger()->flush();
-    
+
     if (settings->bDebugLogging) {
         RE::DebugNotification(fmt::format("[TB] +{:.0f}% damage ready!", damagePercent).c_str());
     }
@@ -1595,24 +1731,13 @@ void CounterAttackState::RemoveDamageBonus()
     if (!damageBonusActive) {
         return;
     }
-    
-    // Revert the AttackDamageMult boost we applied
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    if (player && appliedDamageBonus > 0.0f) {
-        float mult = appliedDamageBonus / 100.0f;
-        player->AsActorValueOwner()->RestoreActorValue(
-            RE::ACTOR_VALUE_MODIFIER::kDamage,
-            RE::ActorValue::kAttackDamageMult,
-            -mult);
-        logger::info("[COUNTER DAMAGE] Reverted AttackDamageMult by -{:.2f} (now {:.2f})",
-            mult, player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult));
-    }
-    
-    logger::info("[COUNTER DAMAGE] Damage bonus cleared (was +{:.0f}%)", appliedDamageBonus);
-    spdlog::default_logger()->flush();
-    
+
+    const float was = appliedDamageBonus;
     appliedDamageBonus = 0.0f;
     damageBonusActive = false;
+
+    logger::info("[COUNTER DAMAGE] Bonus cleared (was +{:.0f}%)", was);
+    spdlog::default_logger()->flush();
 }
 
 bool CounterAttackState::IsDamageBonusActive()
@@ -1772,7 +1897,7 @@ void CounterLungeState::Start(RE::Actor* player, RE::Actor* target)
     if (!player || !target) {
         return;
     }
-    
+
     auto* settings = Settings::GetSingleton();
     const float meleeStop = CounterAttackState::fromTimedDodge
         ? settings->fTimedDodgeCounterLungeMeleeStopDistance
@@ -2264,7 +2389,6 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
     const RE::TESHitEvent* a_event,
     RE::BSTEventSource<RE::TESHitEvent>*)
 {
-    // Only process if damage bonus is active
     if (!CounterAttackState::IsDamageBonusActive()) {
         return RE::BSEventNotifyControl::kContinue;
     }
@@ -2273,42 +2397,91 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
         return RE::BSEventNotifyControl::kContinue;
     }
     
-    // Check if the CAUSE (attacker) is the player
     if (!a_event->cause) {
         return RE::BSEventNotifyControl::kContinue;
     }
     
-    RE::Actor* attacker = a_event->cause->As<RE::Actor>();
-    if (!attacker || !attacker->IsPlayerRef()) {
+    RE::Actor* player = a_event->cause->As<RE::Actor>();
+    if (!player || !player->IsPlayerRef()) {
         return RE::BSEventNotifyControl::kContinue;
     }
     
-    // Skip projectile hits (we only care about melee)
     if (a_event->projectile) {
         return RE::BSEventNotifyControl::kContinue;
     }
     
-    // Player landed a melee hit while counter damage bonus is active.
-    // The bonus was already applied via kAttackDamageMult, so the engine's
-    // damage pipeline (and any damage number mods) already includes it.
-    // We just need to clean up and play the sound.
     RE::Actor* target = a_event->target ? a_event->target->As<RE::Actor>() : nullptr;
+    if (!target) {
+        return RE::BSEventNotifyControl::kContinue;
+    }
 
     auto* settings = Settings::GetSingleton();
 
-    logger::info("[COUNTER DAMAGE] Counter hit landed on '{}' with +{:.0f}% bonus (via AttackDamageMult)",
-        target ? target->GetName() : "unknown", CounterAttackState::appliedDamageBonus);
-    spdlog::default_logger()->flush();
-
-    if (settings->bDebugLogging) {
-        RE::DebugNotification(
-            fmt::format("[TB] Counter! +{:.0f}% damage", CounterAttackState::appliedDamageBonus).c_str());
+    // Calculate bonus damage from the player's weapon base damage
+    float baseDamage = 0.0f;
+    auto* weapon = player->GetEquippedObject(false);
+    if (weapon && weapon->IsWeapon()) {
+        auto* weap = weapon->As<RE::TESObjectWEAP>();
+        if (weap) {
+            baseDamage = static_cast<float>(weap->GetAttackDamage());
+        }
+    }
+    if (baseDamage <= 0.0f) {
+        baseDamage = 10.0f;
     }
 
-    PlayCounterStrikeSound();
+    float damageMult = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult);
+    baseDamage *= damageMult;
 
-    // Revert the AttackDamageMult boost now that the hit has landed
+    float bonusPercent = CounterAttackState::appliedDamageBonus / 100.0f;
+    float bonusDamage = baseDamage * bonusPercent;
+
+    // Clear bonus BEFORE casting — CastSpellImmediate is synchronous and will
+    // re-enter this handler via a new TESHitEvent; the guard at the top must
+    // see damageBonusActive == false to prevent infinite recursion.
     CounterAttackState::RemoveDamageBonus();
+
+    if (bonusDamage > 0.0f) {
+        bool castOk = false;
+
+        if (CounterAttackState::counterSpell && !CounterAttackState::counterSpell->effects.empty()) {
+            RE::Effect* eff = CounterAttackState::counterSpell->effects[0];
+            if (eff) {
+                eff->effectItem.magnitude = bonusDamage;
+
+                auto* caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
+                if (caster) {
+                    caster->CastSpellImmediate(
+                        CounterAttackState::counterSpell,
+                        true,
+                        target,
+                        1.0f,
+                        false,
+                        0.0f,
+                        player);
+                    castOk = true;
+                }
+            }
+        }
+
+        if (!castOk) {
+            target->AsActorValueOwner()->RestoreActorValue(
+                RE::ACTOR_VALUE_MODIFIER::kDamage,
+                RE::ActorValue::kHealth,
+                -bonusDamage);
+        }
+
+        logger::info("[COUNTER DAMAGE] Hit '{}': base ~{:.1f}, +{:.0f}% = +{:.1f} bonus damage (spell={})",
+            target->GetName(), baseDamage, bonusPercent * 100.0f,
+            bonusDamage, castOk ? "yes" : "fallback");
+        spdlog::default_logger()->flush();
+
+        if (settings->bDebugLogging) {
+            RE::DebugNotification(fmt::format("[TB] Counter! +{:.0f} damage", bonusDamage).c_str());
+        }
+
+        PlayCounterStrikeSound();
+    }
     
     return RE::BSEventNotifyControl::kContinue;
 }

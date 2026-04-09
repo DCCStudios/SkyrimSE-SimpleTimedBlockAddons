@@ -67,6 +67,12 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             logger::info("Post load game - reloading settings");
             Settings::GetSingleton()->LoadSettings();
             
+            // Create counter damage forms (deferred from kDataLoaded so other
+            // plugins like SkyPatcher finish iterating spells first)
+            if (!CounterAttackState::CreateCounterDamageForms()) {
+                logger::error("Failed to create counter-attack damage MGEF/spell");
+            }
+            
             // Register animation event handler for counter slow time
             // (needs player to exist, so done here)
             CounterAnimEventHandler::Register();
@@ -75,6 +81,10 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
         case SKSE::MessagingInterface::kNewGame: {
             logger::info("New game - reloading settings");
             Settings::GetSingleton()->LoadSettings();
+            
+            if (!CounterAttackState::CreateCounterDamageForms()) {
+                logger::error("Failed to create counter-attack damage MGEF/spell");
+            }
             
             // Register animation event handler for counter slow time
             CounterAnimEventHandler::Register();

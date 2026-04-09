@@ -79,7 +79,7 @@ void Settings::LoadSettings() {
     // Load Counter Lunge settings
     bEnableCounterLunge = ini.GetBoolValue("CounterLunge", "bEnableCounterLunge", false);
     fCounterLungeDistance = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeDistance", 150.0));
-    fCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeSpeed", 800.0));
+    fCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeSpeed", 2.0));
     iCounterLungeCurve = static_cast<int>(ini.GetLongValue("CounterLunge", "iCurve", 0));
     fCounterLungeMeleeStopDistance = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fMeleeStopDistance", 128.0));
     
@@ -115,7 +115,7 @@ void Settings::LoadSettings() {
     fTimedDodgeCounterDamagePercent = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterDamagePercent", 50.0));
     fTimedDodgeCounterDamageTimeout = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterDamageTimeout", 3.0));
     bTimedDodgeCounterLunge = ini.GetBoolValue("TimedDodge", "bCounterLunge", true);
-    fTimedDodgeCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeSpeed", 800.0));
+    fTimedDodgeCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeSpeed", 2.0));
     iTimedDodgeCounterLungeCurve = static_cast<int>(ini.GetLongValue("TimedDodge", "iCounterLungeCurve", 0));
     fTimedDodgeCounterLungeMeleeStopDistance = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeMeleeStop", 128.0));
     bTimedDodgeRadialBlur = ini.GetBoolValue("TimedDodge", "bRadialBlur", true);
@@ -149,7 +149,8 @@ void Settings::LoadSettings() {
     fCooldownDurationMs = std::clamp(fCooldownDurationMs, 0.0f, 1000.0f);
     fTimedDodgeCounterWindowMs = std::clamp(fTimedDodgeCounterWindowMs, 50.0f, 30000.0f);
     fCounterLungeMeleeStopDistance = std::clamp(fCounterLungeMeleeStopDistance, 32.0f, 512.0f);
-    fTimedDodgeCounterLungeSpeed = std::clamp(fTimedDodgeCounterLungeSpeed, 200.0f, 2000.0f);
+    fCounterLungeSpeed = std::clamp(fCounterLungeSpeed, 0.1f, 50.0f);
+    fTimedDodgeCounterLungeSpeed = std::clamp(fTimedDodgeCounterLungeSpeed, 0.1f, 50.0f);
     fTimedDodgeCounterLungeMeleeStopDistance = std::clamp(fTimedDodgeCounterLungeMeleeStopDistance, 32.0f, 512.0f);
     iCounterLungeCurve = std::clamp(iCounterLungeCurve, 0, 5);
     iTimedDodgeCounterLungeCurve = std::clamp(iTimedDodgeCounterLungeCurve, 0, 5);

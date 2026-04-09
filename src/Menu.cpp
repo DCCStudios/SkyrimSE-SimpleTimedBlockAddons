@@ -478,7 +478,7 @@ namespace Menu
                     ImGui::SetTooltip("Maximum distance to lunge toward the attacker.\n\n100-150 = short lunge\n200-300 = medium lunge\n400-500 = long lunge");
                 }
                 
-                if (ImGui::SliderFloat("Lunge Speed", &settings->fCounterLungeSpeed, 200.0f, 2000.0f, "%.0f units/s")) {
+                if (ImGui::SliderFloat("Lunge Speed", &settings->fCounterLungeSpeed, 0.1f, 50.0f, "%.1f")) {
                     State::MarkChanged();
                 }
                 if (ImGui::IsItemHovered()) {
@@ -782,7 +782,7 @@ namespace Menu
                     if (settings->bTimedDodgeCounterLunge) {
                         ImGui::Indent();
 
-                        if (ImGui::SliderFloat("Lunge Speed##dodgeCounter", &settings->fTimedDodgeCounterLungeSpeed, 200.0f, 2000.0f, "%.0f units/s")) {
+                        if (ImGui::SliderFloat("Lunge Speed##dodgeCounter", &settings->fTimedDodgeCounterLungeSpeed, 0.1f, 50.0f, "%.1f")) {
                             State::MarkChanged();
                         }
                         if (ImGui::IsItemHovered()) {

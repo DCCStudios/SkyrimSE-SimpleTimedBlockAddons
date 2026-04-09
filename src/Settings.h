@@ -81,7 +81,7 @@ public:
     //==========================================================================
     bool  bEnableCounterLunge{ false };     // Disabled by default
     float fCounterLungeDistance{ 150.0f };  // Max distance to lunge (game units)
-    float fCounterLungeSpeed{ 800.0f };     // Speed of lunge (units/second)
+    float fCounterLungeSpeed{ 2.0f };       // Speed of lunge
     int   iCounterLungeCurve{ 0 };          // Velocity curve: 0=Bell, 1=Linear, 2=EaseIn, 3=EaseOut, 4=CubicIn, 5=CubicOut
     float fCounterLungeMeleeStopDistance{ 128.0f }; // Stop lunge this far from target (timed block counter)
     
@@ -136,7 +136,7 @@ public:
     float fTimedDodgeCounterDamagePercent{ 50.0f }; // Counter damage bonus for timed dodge (50 = 1.5x total)
     float fTimedDodgeCounterDamageTimeout{ 3.0f }; // Timeout for dodge counter damage bonus (longer than block due to dodge exit)
     bool  bTimedDodgeCounterLunge{ true };            // Lunge toward attacker on timed dodge counter
-    float fTimedDodgeCounterLungeSpeed{ 800.0f };    // Lunge speed for timed dodge counter (units/s)
+    float fTimedDodgeCounterLungeSpeed{ 2.0f };     // Lunge speed for timed dodge counter
     int   iTimedDodgeCounterLungeCurve{ 0 };         // Velocity curve for timed dodge lunge (same enum as iCounterLungeCurve)
     float fTimedDodgeCounterLungeMeleeStopDistance{ 128.0f }; // Stop distance for timed dodge lunge
 

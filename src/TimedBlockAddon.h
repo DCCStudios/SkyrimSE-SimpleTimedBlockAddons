@@ -168,7 +168,13 @@ namespace CounterAttackState
     inline bool damageBonusActive{ false };
     inline float appliedDamageBonus{ 0.0f };
     inline bool fromTimedDodge{ false };
-    
+
+    // Runtime "Damage Health" MGEF + spell — cast on the TARGET on counter hit
+    inline RE::EffectSetting* counterMGEF{ nullptr };
+    inline RE::SpellItem* counterSpell{ nullptr };
+
+    bool CreateCounterDamageForms();
+
     void StartWindow(RE::Actor* attacker = nullptr);
     void Update();
     bool IsInWindow();
