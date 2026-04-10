@@ -1,5 +1,8 @@
 #pragma once
 
+#include "PrecisionAPI.h"
+#include "Settings.h"
+
 // RELOCATION_OFFSET macro for SE/AE compatibility
 #ifndef RELOCATION_OFFSET
 #   ifdef SKYRIM_SUPPORT_AE
@@ -115,6 +118,8 @@ public:
 
     // Effect methods
     void ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* attacker, bool skipSlowmo = false, bool fromTimedDodge = false);
+    // Ward timed block: melee hit during ward window — no player block/stagger cancels; optional 1H/2H stagger on attacker
+    void ApplyWardTimedBlockEffects(RE::Actor* defender, RE::Actor* attacker, bool isDualCastWard);
     void PlayTimedBlockSound();
     void PlayCustomWavSound();
     void ApplySlowmo(float speed, float duration);
@@ -158,6 +163,29 @@ namespace Offsets
 // Dispels the parry window spell from the player (used when on cooldown)
 void DispelParryWindowSpell();
 
+// Shared timestamp of the last time ANY timed window (block, ward, dodge) was
+// successfully activated.  Each system checks this before opening its own window
+// to enforce a mutual-exclusion gap (fWindowExclusionMs).
+namespace WindowExclusion
+{
+    inline std::chrono::steady_clock::time_point lastWindowTime{};
+
+    // Record that a window just opened.
+    inline void Stamp()
+    {
+        lastWindowTime = std::chrono::steady_clock::now();
+    }
+
+    // Returns true if another window was activated too recently.
+    inline bool IsBlocked()
+    {
+        auto* settings = Settings::GetSingleton();
+        if (settings->fWindowExclusionMs <= 0.0f) return false;
+        auto elapsed = std::chrono::steady_clock::now() - lastWindowTime;
+        return elapsed < std::chrono::milliseconds(static_cast<long long>(settings->fWindowExclusionMs));
+    }
+}
+
 // Counter Attack state tracking - allows attacking to cancel block animation
 namespace CounterAttackState
 {
@@ -168,6 +196,19 @@ namespace CounterAttackState
     inline bool damageBonusActive{ false };
     inline float appliedDamageBonus{ 0.0f };
     inline bool fromTimedDodge{ false };
+    inline bool fromWardTimedBlock{ false };
+
+    // Set when the player fires a spell during the ward counter window.
+    // Prevents the damage bonus from expiring before the projectile lands.
+    inline bool spellFiredDuringWindow{ false };
+
+    // Handle of the specific projectile fired by the player.
+    // Empty if it's a concentration/beam spell (no projectile to track).
+    inline RE::ProjectileHandle trackedSpellProjectile{};
+
+    // Frames remaining to retry finding the projectile in Projectile::Manager
+    // after the spell-fire animation event (projectile may spawn one frame later).
+    inline int projectileScanRetries{ 0 };
 
     // Runtime "Damage Health" MGEF + spell — cast on the TARGET on counter hit
     inline RE::EffectSetting* counterMGEF{ nullptr };
@@ -176,14 +217,63 @@ namespace CounterAttackState
     bool CreateCounterDamageForms();
 
     void StartWindow(RE::Actor* attacker = nullptr);
+    void StartWardWindow(RE::Actor* attacker = nullptr);
+    void OnSpellFired();
     void Update();
     bool IsInWindow();
     void OnAttackInput();
     RE::Actor* GetLastAttacker();
-    void ApplyDamageBonus();
+    void ApplyDamageBonus(bool isSpellCounter = false);
     void RemoveDamageBonus();
     bool IsDamageBonusActive();
 }
+
+// Ward effect apply — opens ward timed block window when player self-applies a ward MGEF
+namespace WardTimedBlockState
+{
+    inline bool inWindow{ false };
+    inline bool isDualCast{ false };
+    inline float healthSnapshot{ 0.0f };
+    inline RE::ActorHandle lastAttackerHandle;
+    inline std::chrono::steady_clock::time_point windowEnd;
+
+    inline bool onCooldown{ false };
+    inline std::chrono::steady_clock::time_point cooldownEndTime;
+
+    // Cached MagicWard keyword — set once by InitWardKeyword() at kDataLoaded
+    inline RE::BGSKeyword* wardKeyword{ nullptr };
+
+    // Set to true once Precision's PreHit callback is registered successfully.
+    // Ward timed block is disabled and falls back to TESHitEvent if false.
+    inline bool g_precisionAvailable{ false };
+
+    void InitWardKeyword();
+    // Register our PreHit callback with Precision. Called at kDataLoaded.
+    void RegisterPrecision();
+    void OnWardActivated(bool dualCast);
+    // Returns true if the parry was consumed (hit should be ignored).
+    // Returns false if the parry was rejected (e.g. 2H ward requirement failed).
+    bool OnMeleeHit(RE::Actor* defender, RE::Actor* attacker);
+    void Update();
+    bool IsInWindow();
+    bool IsOnCooldown();
+    void StartCooldown();
+    void PlayWardTimedBlockSound();
+    void PlayWardCounterSpellSound();
+}
+
+class WardEffectHandler : public RE::BSTEventSink<RE::TESMagicEffectApplyEvent> {
+public:
+    static WardEffectHandler* GetSingleton();
+    static void Register();
+
+    RE::BSEventNotifyControl ProcessEvent(
+        const RE::TESMagicEffectApplyEvent* a_event,
+        RE::BSTEventSource<RE::TESMagicEffectApplyEvent>*) override;
+
+private:
+    WardEffectHandler() = default;
+};
 
 // Hit event handler to remove damage bonus after first hit
 class CounterDamageHitHandler : public RE::BSTEventSink<RE::TESHitEvent> {

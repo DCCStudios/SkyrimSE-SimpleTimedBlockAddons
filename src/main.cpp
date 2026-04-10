@@ -44,6 +44,12 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             
             // Register event sink for timed block detection
             TimedBlockAddon::Register();
+
+            WardEffectHandler::Register();
+
+            // Register with Precision for hitbox-level ward parry (preferred over TESHitEvent fallback).
+            // Safe to call even if Precision is absent — logs a warning and disables the Precision path.
+            WardTimedBlockState::RegisterPrecision();
             
             // Register counter damage hit handler (removes damage bonus after first hit)
             CounterDamageHitHandler::Register();

@@ -12,6 +12,8 @@ namespace Menu
         
         // Sound path buffer for text input
         inline char soundPathBuffer[256]{ "UIMenuOK" };
+        inline char wardSoundFileBuffer[128]{ "wardtimedblock.wav" };
+        inline char wardCounterSpellFileBuffer[128]{ "wardcounterspell.wav" };
         
         void Initialize()
         {
@@ -19,6 +21,10 @@ namespace Menu
             // Copy sound path to buffer for text input
             strncpy_s(soundPathBuffer, settings->sSoundPath.c_str(), sizeof(soundPathBuffer) - 1);
             soundPathBuffer[sizeof(soundPathBuffer) - 1] = '\0';
+            strncpy_s(wardSoundFileBuffer, settings->sWardTimedBlockSoundFile.c_str(), sizeof(wardSoundFileBuffer) - 1);
+            wardSoundFileBuffer[sizeof(wardSoundFileBuffer) - 1] = '\0';
+            strncpy_s(wardCounterSpellFileBuffer, settings->sWardCounterSpellSoundFile.c_str(), sizeof(wardCounterSpellFileBuffer) - 1);
+            wardCounterSpellFileBuffer[sizeof(wardCounterSpellFileBuffer) - 1] = '\0';
             initialized = true;
             hasUnsavedChanges = false;
         }
@@ -818,6 +824,26 @@ namespace Menu
                         ImGui::Unindent();
                     }
 
+                    ImGui::Spacing();
+
+                    if (ImGui::Checkbox("Spell Counter Attack##dodge", &settings->bTimedDodgeCounterSpellHit)) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Allow casting a counter-attack spell after a timed dodge.\nThe dodge animation is cancelled and the spell receives bonus damage on hit.\n\nDefault: On");
+                    }
+
+                    if (settings->bTimedDodgeCounterSpellHit) {
+                        ImGui::Indent();
+                        if (ImGui::SliderFloat("Spell Damage Bonus##dodge", &settings->fTimedDodgeCounterSpellDamagePercent, 10.0f, 500.0f, "+%.0f%%")) {
+                            State::MarkChanged();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Extra damage added to a counter-attack spell fired after a timed dodge.\n+50%% means a 20-damage spell deals 30.\n\nDefault: +50%%");
+                        }
+                        ImGui::Unindent();
+                    }
+
                     ImGui::Unindent();
                 }
                 
@@ -965,7 +991,213 @@ namespace Menu
                 ImGui::Unindent();
             }
         }
+
+        // ===== WARD TIMED BLOCK =====
+        if (ImGui::CollapsingHeader("Ward Timed Block", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::Checkbox("Enable Ward Timed Block", &settings->bEnableWardTimedBlock)) {
+                State::MarkChanged();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Melee-only: while a ward spell is active, a short window opens after the ward applies.\n"
+                    "If a melee attack hits during that window, damage is cancelled and timed-block effects\n"
+                    "(hitstop, stagger on attacker, etc.) run — without forcing block animations on the player.");
+            }
+
+            if (settings->bEnableWardTimedBlock) {
+                ImGui::Indent();
+
+                if (ImGui::SliderFloat("Timing Window (ms)", &settings->fWardTimedBlockWindowMs, 50.0f, 2000.0f, "%.0f ms")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("How long after the ward applies you can parry a melee hit (default more forgiving than shield parry).");
+                }
+
+                if (ImGui::Checkbox("Cancel Melee Damage", &settings->bWardTimedBlockDamageCancel)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Restore health to cancel the melee hit that landed during the ward window.");
+                }
+
+                ImGui::Spacing();
+                ImGui::Text("Stagger on attacker");
+                ImGui::Separator();
+                if (ImGui::Checkbox("Enable Ward Stagger", &settings->bWardTimedBlockStagger)) {
+                    State::MarkChanged();
+                }
+                if (settings->bWardTimedBlockStagger) {
+                    ImGui::Indent();
+                    if (ImGui::SliderFloat("1H Ward Stagger", &settings->fWardSmallStaggerMagnitude, 0.0f, 2.0f, "%.2f")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Stagger magnitude when only one hand is casting a ward.");
+                    }
+                    if (ImGui::SliderFloat("2H Dual-Cast Ward Stagger", &settings->fWardLargeStaggerMagnitude, 0.0f, 2.0f, "%.2f")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Stagger magnitude when both hands are casting ward (dual-cast).");
+                    }
+                    ImGui::Unindent();
+                }
+
+                ImGui::Spacing();
+                ImGui::Text("Sound");
+                ImGui::Separator();
+                if (ImGui::Checkbox("Ward Timed Block Sound", &settings->bWardTimedBlockSound)) {
+                    State::MarkChanged();
+                }
+                if (settings->bWardTimedBlockSound) {
+                    ImGui::Indent();
+                    float wv = settings->fWardTimedBlockSoundVolume * 100.0f;
+                    if (ImGui::SliderFloat("Volume##wardtb", &wv, 0.0f, 100.0f, "%.0f%%")) {
+                        settings->fWardTimedBlockSoundVolume = wv / 100.0f;
+                        State::MarkChanged();
+                    }
+                    if (ImGui::InputText("WAV filename##wardtb", State::wardSoundFileBuffer, sizeof(State::wardSoundFileBuffer))) {
+                        settings->sWardTimedBlockSoundFile = State::wardSoundFileBuffer;
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("File placed in Data/SKSE/Plugins/SimpleTimedBlockAddons/");
+                    }
+                    ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f),
+                        "WAV: Data/SKSE/Plugins/SimpleTimedBlockAddons/%s", settings->sWardTimedBlockSoundFile.c_str());
+                    ImGui::Unindent();
+                }
+
+                ImGui::Spacing();
+                ImGui::Text("Counter attack");
+                ImGui::Separator();
+                if (ImGui::Checkbox("Enable Ward Counter Window", &settings->bWardTimedBlockCounterAttack)) {
+                    State::MarkChanged();
+                }
+                if (settings->bWardTimedBlockCounterAttack) {
+                    ImGui::Indent();
+                    if (ImGui::SliderFloat("Counter Window (ms)##ward", &settings->fWardCounterWindowMs, 50.0f, 10000.0f, "%.0f ms")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("How long after the ward timed block the player has to land a counter attack or spell hit.");
+                    }
+                    if (ImGui::SliderFloat("Counter damage bonus %%##ward", &settings->fWardCounterDamagePercent, 0.0f, 500.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Extra damage applied on top of the counter attack (melee or spell) after a successful ward timed block.\n0%% = no bonus. 50%% = +50%% of the hit's base damage.");
+                    }
+                    if (ImGui::Checkbox("Spell / magic projectile can satisfy counter", &settings->bWardCounterSpellHit)) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip(
+                            "First qualifying spell hit (concentration or spell projectile) can apply the counter damage bonus.\n"
+                            "Physical arrows/bolts are ignored.");
+                    }
+                    if (settings->bWardCounterSpellHit) {
+                        ImGui::Indent();
+                        if (ImGui::SliderFloat("Spell in-flight timeout (ms)##ward", &settings->fWardCounterSpellInFlightMs, 100.0f, 30000.0f, "%.0f ms")) {
+                            State::MarkChanged();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip(
+                                "After a counter spell is CAST, how long the bonus stays alive while the projectile travels\n"
+                                "or a concentration spell starts hitting. If nothing lands in this time the bonus expires.\n"
+                                "Default: 5000ms (5 seconds).");
+                        }
+                        if (ImGui::Checkbox("Spell counter sound", &settings->bWardCounterSpellSound)) {
+                            State::MarkChanged();
+                        }
+                        if (settings->bWardCounterSpellSound) {
+                            float sv = settings->fWardCounterSpellSoundVolume * 100.0f;
+                            if (ImGui::SliderFloat("Spell counter volume##ward", &sv, 0.0f, 100.0f, "%.0f%%")) {
+                                settings->fWardCounterSpellSoundVolume = sv / 100.0f;
+                                State::MarkChanged();
+                            }
+                            if (ImGui::InputText("Spell counter WAV##ward", State::wardCounterSpellFileBuffer, sizeof(State::wardCounterSpellFileBuffer))) {
+                                settings->sWardCounterSpellSoundFile = State::wardCounterSpellFileBuffer;
+                                State::MarkChanged();
+                            }
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f),
+                                "WAV: Data/SKSE/Plugins/SimpleTimedBlockAddons/%s", settings->sWardCounterSpellSoundFile.c_str());
+                        }
+                        ImGui::Unindent();
+                    }
+                    ImGui::Unindent();
+                }
+
+                if (ImGui::SliderFloat("Ward timed block cooldown (sec)", &settings->fWardTimedBlockCooldown, 0.0f, 10.0f, "%.1f")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Minimum time before a new ward window can start after a successful parry.");
+                }
+
+                ImGui::Spacing();
+
+                if (ImGui::SliderFloat("Melee detection range (units)##wardrange", &settings->fWardMeleeDetectionRange, 50.0f, 1000.0f, "%.0f")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Maximum distance (game units) between the player and attacker for a ward timed block to trigger.\n1H weapon reach ~130u, 2H ~200u. Default 300 gives generous slack.");
+                }
+
+                ImGui::Spacing();
+
+                if (ImGui::Checkbox("Omnidirectional ward##wardOmni", &settings->bWardOmnidirectional)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("By default the ward only parries attacks from the front 180\xc2\xb0 (matching vanilla ward coverage).\nEnable this to parry attacks from all directions.");
+                }
+
+                ImGui::Spacing();
+
+                if (ImGui::Checkbox("Require 2H ward for 2H weapon attacks##ward2h", &settings->bWardRequire2HForTwoHanders)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("When enabled, only a dual-cast (both hands) ward can parry two-handed weapon attacks.\nA single-hand ward can only parry one-handed attacks.");
+                }
+
+                ImGui::Spacing();
+
+                if (ImGui::Checkbox("Restore magicka on ward timed block##wardmp", &settings->bWardTimedBlockMagickaRestore)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Restore a portion of the player's magicka on a successful ward timed block.");
+                }
+                if (settings->bWardTimedBlockMagickaRestore) {
+                    ImGui::Indent();
+                    if (ImGui::SliderFloat("Magicka restore %%##wardmpslider", &settings->fWardMagickaRestorePercent, 0.0f, 100.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Percentage of maximum magicka restored on a successful ward timed block.");
+                    }
+                    ImGui::Unindent();
+                }
+
+                ImGui::Unindent();
+            }
+        }
         
+        // ===== GENERAL SECTION =====
+        if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::SliderFloat("Window exclusion (ms)", &settings->fWindowExclusionMs, 0.0f, 5000.0f, "%.0f ms")) {
+                State::MarkChanged();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Minimum time between timed block, ward timed block, and timed dodge windows.\n"
+                    "Prevents chaining one into another (e.g. ward parry then immediately dodge).\n"
+                    "0 = no restriction.");
+            }
+        }
+
         // ===== DEBUG SECTION =====
         if (ImGui::CollapsingHeader("Debug", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::Checkbox("Debug Logging", &settings->bDebugLogging)) {
@@ -1015,6 +1247,10 @@ namespace Menu
             // Refresh sound path buffer
             strncpy_s(State::soundPathBuffer, settings->sSoundPath.c_str(), sizeof(State::soundPathBuffer) - 1);
             State::soundPathBuffer[sizeof(State::soundPathBuffer) - 1] = '\0';
+            strncpy_s(State::wardSoundFileBuffer, settings->sWardTimedBlockSoundFile.c_str(), sizeof(State::wardSoundFileBuffer) - 1);
+            State::wardSoundFileBuffer[sizeof(State::wardSoundFileBuffer) - 1] = '\0';
+            strncpy_s(State::wardCounterSpellFileBuffer, settings->sWardCounterSpellSoundFile.c_str(), sizeof(State::wardCounterSpellFileBuffer) - 1);
+            State::wardCounterSpellFileBuffer[sizeof(State::wardCounterSpellFileBuffer) - 1] = '\0';
             State::hasUnsavedChanges = false;
             RE::DebugNotification("Simple Timed Block Addons: Settings reverted to INI!");
         }

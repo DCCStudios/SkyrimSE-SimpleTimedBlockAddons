@@ -5,6 +5,7 @@
 #include <thread>
 #include <cmath>
 #include <random>
+#include <cstring>
 
 // Windows headers for custom WAV playback
 #include <mmsystem.h>
@@ -266,6 +267,8 @@ void AnimSpeedManager::PlayerAnimationHook::PlayerCharacter_UpdateAnimation(RE::
     
     // Update counter attack window timer
     CounterAttackState::Update();
+
+    WardTimedBlockState::Update();
     
     // Note: lunge position updates happen in the physics hook (after simulation)
 
@@ -836,9 +839,90 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
         return Result::kContinue;
     }
     
-    // Skip projectiles for timed block processing
+    // Skip projectiles for timed block processing (ward timed block is melee-only)
     if (a_event->projectile) {
         return Result::kContinue;
+    }
+
+    // Ward timed block: melee hit while player is casting a ward
+    {
+        auto* wardSettings = Settings::GetSingleton();
+        if (wardSettings->bEnableWardTimedBlock && !WardTimedBlockState::IsOnCooldown()) {
+            bool eventWindow = WardTimedBlockState::IsInWindow();
+            bool castingWard = false;
+            bool dualCast = WardTimedBlockState::isDualCast;
+
+            if (!eventWindow) {
+                // Real-time check: scan the player's active effects for any ward effect.
+                // This works for concentration wards where MagicCaster::currentSpell is null
+                // after the initial cast (the effect stays in the active effects list instead).
+                auto* mt = defender->AsMagicTarget();
+                auto* effectList = mt ? mt->GetActiveEffectList() : nullptr;
+                if (effectList) {
+                    bool foundLeft = false, foundRight = false;
+                    for (auto* ae : *effectList) {
+                        if (!ae) continue;
+                        if (ae->flags.any(RE::ActiveEffect::Flag::kInactive) ||
+                            ae->flags.any(RE::ActiveEffect::Flag::kDispelled)) continue;
+                        auto* baseEff = ae->GetBaseObject();
+                        if (!baseEff) continue;
+                        // Fast keyword check: pointer if available, then string scan
+                        bool isWard = (WardTimedBlockState::wardKeyword && baseEff->HasKeyword(WardTimedBlockState::wardKeyword))
+                                   || baseEff->HasKeywordString("MagicWard");
+                        if (!isWard) continue;
+                        castingWard = true;
+                        if (ae->castingSource == RE::MagicSystem::CastingSource::kLeftHand)  foundLeft  = true;
+                        if (ae->castingSource == RE::MagicSystem::CastingSource::kRightHand) foundRight = true;
+                    }
+                    if (castingWard) dualCast = foundLeft && foundRight;
+                }
+
+                if (wardSettings->bDebugLogging) {
+                    if (castingWard) {
+                        logger::info("[WARD TB] Active-effect ward detected: dual={}", dualCast);
+                    } else {
+                        logger::info("[WARD TB] Melee hit on player — no ward active effect found (kw={})",
+                            WardTimedBlockState::wardKeyword ? "ok" : "null");
+                        RE::DebugNotification("[WARD] Hit — no ward detected");
+                    }
+                }
+            }
+
+            // If the event-based window isn't open but we detected a ward via active effects,
+            // route through OnWardActivated — it has the cooldown guard and single-open logic.
+            // Never force inWindow directly; let OnWardActivated decide.
+            if (!eventWindow && castingWard) {
+                WardTimedBlockState::OnWardActivated(dualCast);
+                eventWindow = WardTimedBlockState::IsInWindow();
+            }
+
+            if (eventWindow) {
+                RE::Actor* wardAttacker = a_event->cause ? a_event->cause->As<RE::Actor>() : nullptr;
+                if (wardAttacker) {
+                    // Reject hits from actors outside melee weapon range.
+                    // TESHitEvent fires for any hit source; without this, distant NPCs
+                    // (e.g. an archer's "melee fallback" hit) would trigger ward parries.
+                    const float wardRange = wardSettings->fWardMeleeDetectionRange;
+                    const float kWardMeleeRangeSq = wardRange * wardRange;
+                    const float distSq = defender->GetPosition().GetSquaredDistance(wardAttacker->GetPosition());
+                    if (distSq > kWardMeleeRangeSq) {
+                        if (wardSettings->bDebugLogging) {
+                            logger::info("[WARD TB] Hit rejected — attacker too far ({:.0f} units)", std::sqrt(distSq));
+                            RE::DebugNotification("[WARD] Hit — attacker out of melee range");
+                        }
+                        // Fall through to normal hit processing
+                    } else {
+                        if (wardSettings->bDebugLogging) {
+                            RE::DebugNotification(fmt::format("[WARD] Hit IN parry window ({:.0f}u)", std::sqrt(distSq)).c_str());
+                        }
+                        WardTimedBlockState::OnMeleeHit(defender, wardAttacker);
+                        return Result::kContinue;
+                    }
+                }
+            } else if (wardSettings->bDebugLogging) {
+                RE::DebugNotification("[WARD] Hit — NOT in parry window");
+            }
+        }
     }
     
     // Check if this is a blocked hit
@@ -881,8 +965,17 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
         }
     }
     
+    // Mutual exclusion: skip if a ward timed block or timed dodge was triggered recently
+    if (WindowExclusion::IsBlocked()) {
+        if (settings->bDebugLogging) {
+            logger::info("[HITEVENT] Timed block skipped — another window activated too recently");
+        }
+        return Result::kContinue;
+    }
+
     // Mark that a timed block was triggered (for cooldown tracking)
     CooldownState::OnTimedBlockTriggered();
+    WindowExclusion::Stamp();
     
     // Start counter attack window (if enabled) - pass attacker for lunge targeting
     CounterAttackState::StartWindow(attacker);
@@ -1004,6 +1097,74 @@ void TimedBlockAddon::ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* att
     }
 }
 
+void TimedBlockAddon::ApplyWardTimedBlockEffects(RE::Actor* defender, RE::Actor* attacker, bool isDualCastWard)
+{
+    auto* settings = Settings::GetSingleton();
+
+    // Cancel the player's hit-react / stagger so the ward visually "stops" the blow.
+    // We intentionally skip any block-specific graph events (BlockHitEnd etc.) since
+    // the player is casting, not using a shield — only neutral stagger-cancel is needed.
+    if (settings->bPreventPlayerStagger && defender) {
+        defender->SetGraphVariableBool("IsStaggering", false);
+        defender->SetGraphVariableBool("IsRecoiling", false);
+        defender->SetGraphVariableFloat("staggerMagnitude", 0.0f);
+        defender->NotifyAnimationGraph("staggerStop");
+    }
+
+    if (settings->bEnableHitstop && attacker) {
+        AnimSpeedManager::SetAnimSpeed(attacker->GetHandle(), settings->fHitstopSpeed, settings->fHitstopDuration);
+    }
+
+    if (settings->bWardTimedBlockStagger && attacker && defender) {
+        float staggerMag = isDualCastWard ? settings->fWardLargeStaggerMagnitude : settings->fWardSmallStaggerMagnitude;
+        if (RollStaggerSuccess(defender)) {
+            TriggerStagger(defender, attacker, staggerMag);
+        }
+    }
+
+    if (settings->bEnableCameraShake && defender) {
+        ShakeCamera(settings->fCameraShakeStrength, defender->GetPosition(), settings->fCameraShakeDuration);
+    }
+
+    if (settings->bEnableStaminaRestore && defender) {
+        auto* avOwner = defender->AsActorValueOwner();
+        if (avOwner) {
+            float maxStamina = avOwner->GetPermanentActorValue(RE::ActorValue::kStamina);
+            float currentStamina = avOwner->GetActorValue(RE::ActorValue::kStamina);
+            float restoreAmount = maxStamina * (settings->fStaminaRestorePercent / 100.0f);
+            float actualRestore = (std::min)(restoreAmount, maxStamina - currentStamina);
+            if (actualRestore > 0.0f) {
+                avOwner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, actualRestore);
+            }
+        }
+    }
+
+    if (settings->bWardTimedBlockMagickaRestore && defender) {
+        auto* avOwner = defender->AsActorValueOwner();
+        if (avOwner) {
+            const float maxMp = avOwner->GetPermanentActorValue(RE::ActorValue::kMagicka);
+            const float curMp = avOwner->GetActorValue(RE::ActorValue::kMagicka);
+            const float restore = maxMp * (settings->fWardMagickaRestorePercent / 100.0f);
+            const float actual = (std::min)(restore, maxMp - curMp);
+            if (actual > 0.0f) {
+                avOwner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka, actual);
+                if (settings->bDebugLogging) {
+                    logger::info("[WARD TB] Restored {:.1f} magicka ({:.0f}% of max {:.1f})",
+                        actual, settings->fWardMagickaRestorePercent, maxMp);
+                }
+            }
+        }
+    }
+
+    if (settings->bWardTimedBlockSound) {
+        WardTimedBlockState::PlayWardTimedBlockSound();
+    }
+
+    if (settings->bEnableSlowmo && !TimedDodgeState::IsSlomoActive()) {
+        ApplySlowmo(settings->fSlowmoSpeed, settings->fSlowmoDuration);
+    }
+}
+
 void TimedBlockAddon::TriggerStagger(RE::Actor* defender, RE::Actor* attacker, float magnitude) {
     if (!defender || !attacker) {
         return;
@@ -1090,6 +1251,8 @@ struct WAVFmtChunk {
 static std::vector<uint8_t> g_timedBlockAudioBuffer;
 static std::vector<uint8_t> g_counterStrikeAudioBuffer;
 static std::vector<uint8_t> g_timedDodgeAudioBuffer;
+static std::vector<uint8_t> g_wardTimedBlockAudioBuffer;
+static std::vector<uint8_t> g_wardCounterSpellAudioBuffer;
 
 // Load WAV file and apply software volume adjustment
 bool LoadWAVWithVolume(const std::filesystem::path& filePath, float volumeScale, std::vector<uint8_t>& outBuffer) {
@@ -1407,6 +1570,10 @@ void CounterAttackState::StartWindow(RE::Actor* attacker)
     
     inWindow = true;
     fromTimedDodge = false;
+    fromWardTimedBlock = false;
+    spellFiredDuringWindow = false;
+    trackedSpellProjectile = {};
+    projectileScanRetries = 0;
     windowEndTime = std::chrono::steady_clock::now() + 
         std::chrono::milliseconds(static_cast<long long>(settings->fCounterAttackWindow * 1000.0f));
     
@@ -1423,6 +1590,40 @@ void CounterAttackState::StartWindow(RE::Actor* attacker)
     if (settings->bDebugLogging) {
         logger::info("[COUNTER] Counter attack window OPENED for {}ms", settings->fCounterAttackWindow * 1000.0f);
         RE::DebugNotification("[TB] Counter window open");
+    }
+}
+
+void CounterAttackState::StartWardWindow(RE::Actor* attacker)
+{
+    auto* settings = Settings::GetSingleton();
+    if (!settings->bWardTimedBlockCounterAttack) {
+        return;
+    }
+
+    inWindow = true;
+    fromTimedDodge = false;
+    fromWardTimedBlock = true;
+    spellFiredDuringWindow = false;
+    trackedSpellProjectile = {};
+    projectileScanRetries = 0;
+    windowEndTime = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(static_cast<long long>(settings->fWardCounterWindowMs));
+
+    if (attacker) {
+        lastAttackerHandle = attacker->GetHandle();
+    }
+
+    if (settings->bEnableCounterSlowTime) {
+        CounterSlowTimeState::Arm();
+    }
+
+    // Spell counter can land without a prior attack input — arm bonus immediately (same as timed block %)
+    if (settings->bEnableCounterDamageBonus) {
+        ApplyDamageBonus();
+    }
+
+    if (settings->bDebugLogging) {
+        logger::info("[COUNTER] Ward counter window OPENED for {:.0f}ms", settings->fWardCounterWindowMs);
     }
 }
 
@@ -1444,22 +1645,106 @@ void CounterAttackState::Update()
     // Check counter attack window timeout
     if (inWindow && now >= windowEndTime) {
         inWindow = false;
-        
+        if (!spellFiredDuringWindow) {
+            fromWardTimedBlock = false;
+        }
+
         if (settings->bDebugLogging) {
             logger::info("[COUNTER] Counter attack window CLOSED (timed out)");
         }
     }
     
-    // Check damage bonus timeout (uses configurable timeout)
-    if (damageBonusActive && now >= damageBonusEndTime) {
-        const float timeoutLogged = fromTimedDodge ? settings->fTimedDodgeCounterDamageTimeout : settings->fCounterDamageBonusTimeout;
-        logger::info("[COUNTER DAMAGE] Damage bonus timed out ({:.1f}s)", timeoutLogged);
-        spdlog::default_logger()->flush();
-        
-        if (settings->bDebugLogging) {
-            RE::DebugNotification("[TB] Counter damage expired");
+    // --- Continuous projectile scan ---
+    // Scan every frame while the ward counter bonus is active and we have not yet
+    // latched a projectile.  This catches spells the player started charging before
+    // the parry landed (so OnSpellFired never fired) as well as any delayed spawn.
+    // Only non-destroyed projectiles count — a freshly-exploded Fireball stays in
+    // the Manager briefly with kDestroyed set; we must not latch it at that point.
+    constexpr std::uint32_t kProjDestroyed = (1u << 25);
+
+    if ((fromWardTimedBlock || (fromTimedDodge && spellFiredDuringWindow)) && damageBonusActive && !trackedSpellProjectile) {
+        auto* projMgr = RE::Projectile::Manager::GetSingleton();
+        if (projMgr) {
+            auto scanArray = [&](RE::BSTArray<RE::ProjectileHandle>& arr) {
+                for (std::int32_t i = static_cast<std::int32_t>(arr.size()) - 1; i >= 0; --i) {
+                    auto projPtr = arr[i].get();
+                    if (!projPtr) continue;
+                    auto& rd = projPtr->GetProjectileRuntimeData();
+                    if ((rd.flags & kProjDestroyed) != 0) continue;  // already exploded
+                    auto shooterREFR = rd.shooter.get();
+                    if (shooterREFR && shooterREFR.get() && shooterREFR.get()->IsPlayerRef() && rd.spell) {
+                        trackedSpellProjectile = arr[i];
+                        if (!spellFiredDuringWindow) {
+                            // Player was already charging when the parry landed.
+                            // Close the melee input window and extend the bonus deadline.
+                            spellFiredDuringWindow = true;
+                            inWindow = false;
+                            damageBonusEndTime = now + std::chrono::milliseconds(
+                                static_cast<long long>(settings->fWardCounterSpellInFlightMs));
+                        }
+                        logger::info("[COUNTER DAMAGE] Latched spell projectile");
+                        return;
+                    }
+                }
+            };
+            scanArray(projMgr->unlimited);
+            if (!trackedSpellProjectile) scanArray(projMgr->limited);
+            if (!trackedSpellProjectile) scanArray(projMgr->pending);
         }
+    }
+
+    // --- Projectile destruction detection ---
+    // When the tracked projectile gains kDestroyed, it has hit something (wall,
+    // ground, or enemy).  We do NOT remove the bonus immediately because AoE spells
+    // (Fireball, etc.) fire a separate TESHitEvent with projectile==0 a frame AFTER
+    // the projectile is flagged destroyed.  Instead we:
+    //   1) Clear the handle so the non-projectile path in the hit handler is unblocked.
+    //   2) Shrink the remaining deadline to 500ms — enough time for the AoE event to
+    //      arrive, but short enough that a real miss cleans up quickly.
+    if (trackedSpellProjectile && damageBonusActive && (fromWardTimedBlock || (fromTimedDodge && spellFiredDuringWindow))) {
+        auto projPtr = trackedSpellProjectile.get();
+        bool destroyed = !projPtr;
+        if (!destroyed) {
+            auto& rd = projPtr->GetProjectileRuntimeData();
+            destroyed = (rd.flags & kProjDestroyed) != 0;
+        }
+        if (destroyed) {
+            logger::info("[COUNTER DAMAGE] Tracked projectile destroyed — handle cleared, 500ms AoE grace window");
+            spdlog::default_logger()->flush();
+            trackedSpellProjectile = {};  // unblock the projectile==0 hit path
+            const auto aoeDeadline = now + std::chrono::milliseconds(500);
+            if (damageBonusEndTime > aoeDeadline) {
+                damageBonusEndTime = aoeDeadline;
+            }
+        }
+    }
+
+    // --- Damage bonus timeout (fallback / concentration spells) ---
+    if (damageBonusActive && now >= damageBonusEndTime) {
+        const float timeoutLogged = fromTimedDodge  ? settings->fTimedDodgeCounterDamageTimeout
+                                 : fromWardTimedBlock ? (spellFiredDuringWindow
+                                     ? settings->fWardCounterSpellInFlightMs / 1000.0f
+                                     : settings->fWardCounterWindowMs / 1000.0f)
+                                 : settings->fCounterDamageBonusTimeout;
+        logger::info("[COUNTER DAMAGE] Damage bonus timed out ({:.1f}s, spellInFlight={}, tracked={})",
+            timeoutLogged, spellFiredDuringWindow, static_cast<bool>(trackedSpellProjectile));
+        spdlog::default_logger()->flush();
+
+        if (settings->bDebugLogging) {
+            RE::DebugNotification(spellFiredDuringWindow ? "[TB] Counter spell timed out"
+                                                        : "[TB] Counter damage expired");
+        }
+        const bool wasWard = fromWardTimedBlock;
+        const bool wasDodgeSpell = fromTimedDodge && spellFiredDuringWindow;
         RemoveDamageBonus();
+        if (wasWard) {
+            fromWardTimedBlock = false;
+            inWindow = false;
+        }
+        if (wasDodgeSpell) {
+            fromTimedDodge = false;
+            inWindow = false;
+        }
     }
 }
 
@@ -1468,9 +1753,46 @@ bool CounterAttackState::IsInWindow()
     return inWindow;
 }
 
+void CounterAttackState::OnSpellFired()
+{
+    if ((!fromWardTimedBlock && !fromTimedDodge) || !damageBonusActive) {
+        return;
+    }
+    // Only latch once per counter window — ignore repeat ticks.
+    if (spellFiredDuringWindow) {
+        return;
+    }
+
+    auto* settings = Settings::GetSingleton();
+    spellFiredDuringWindow = true;
+    trackedSpellProjectile = {};  // continuous scan in Update() will latch the projectile
+
+    // Close the melee input window — the player has committed to a spell counter.
+    // Any further attack-button presses should cast more spells, not trigger a
+    // melee counter sound/bonus.  The damage bonus stays open until the projectile
+    // lands (tracked by Update()) or the deadline times out.
+    inWindow = false;
+
+    // Extend the bonus deadline by the in-flight window.
+    damageBonusEndTime = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(static_cast<long long>(settings->fWardCounterSpellInFlightMs));
+
+    if (settings->bDebugLogging) {
+        logger::info("[COUNTER DAMAGE] Spell fired — melee window closed, bonus extended {:.0f}ms",
+            settings->fWardCounterSpellInFlightMs);
+        RE::DebugNotification("[TB] Counter spell in flight...");
+    }
+}
+
 void CounterAttackState::OnAttackInput()
 {
     if (!inWindow) {
+        return;
+    }
+
+    // If the player already fired a counter spell this window, do not also
+    // trigger a melee counter — the spell path owns the bonus from here on.
+    if (fromWardTimedBlock && spellFiredDuringWindow) {
         return;
     }
     
@@ -1481,7 +1803,8 @@ void CounterAttackState::OnAttackInput()
         return;
     }
 
-    // Only allow counter attacks with melee weapons or fists
+    // Only allow counter attacks with melee weapons or fists.
+    // If the right hand has a spell, the player is trying to cast — not counter.
     auto* rightEquipped = player->GetEquippedObject(false);
     if (rightEquipped) {
         if (rightEquipped->IsWeapon()) {
@@ -1495,7 +1818,17 @@ void CounterAttackState::OnAttackInput()
                 }
             }
         } else {
+            // Non-weapon (SpellItem, torch, etc.) in the right hand.
             return;
+        }
+    } else {
+        // GetEquippedObject can return null even when a spell is equipped
+        // (the form is present in the magic system but not the inventory slot).
+        // Check via MagicCaster as a fallback before treating it as unarmed.
+        if (auto* mc = player->GetMagicCaster(RE::MagicSystem::CastingSource::kRightHand)) {
+            if (mc->currentSpell) {
+                return;
+            }
         }
     }
     
@@ -1597,7 +1930,7 @@ void CounterAttackState::OnAttackInput()
         }
     }
     
-    // Apply damage bonus
+    // Apply damage bonus (ward counter may have already armed bonus in StartWardWindow)
     if (settings->bEnableCounterDamageBonus) {
         ApplyDamageBonus();
     }
@@ -1608,6 +1941,7 @@ void CounterAttackState::OnAttackInput()
     }
     
     inWindow = false;
+    fromWardTimedBlock = false;
 }
 
 bool CounterAttackState::CreateCounterDamageForms()
@@ -1699,7 +2033,7 @@ bool CounterAttackState::CreateCounterDamageForms()
     return counterMGEF != nullptr && counterSpell != nullptr;
 }
 
-void CounterAttackState::ApplyDamageBonus()
+void CounterAttackState::ApplyDamageBonus(bool isSpellCounter)
 {
     auto* settings = Settings::GetSingleton();
 
@@ -1708,17 +2042,30 @@ void CounterAttackState::ApplyDamageBonus()
         return;
     }
 
-    float damagePercent = fromTimedDodge ? settings->fTimedDodgeCounterDamagePercent : settings->fCounterDamageBonusPercent;
+    float damagePercent = fromTimedDodge
+        ? (isSpellCounter ? settings->fTimedDodgeCounterSpellDamagePercent
+                          : settings->fTimedDodgeCounterDamagePercent)
+        : fromWardTimedBlock ? settings->fWardCounterDamagePercent
+        : settings->fCounterDamageBonusPercent;
 
     appliedDamageBonus = damagePercent;
     damageBonusActive = true;
 
-    float timeout = fromTimedDodge ? settings->fTimedDodgeCounterDamageTimeout : settings->fCounterDamageBonusTimeout;
+    float timeout = fromTimedDodge  ? settings->fTimedDodgeCounterDamageTimeout
+                  : fromWardTimedBlock ? (settings->fWardCounterWindowMs / 1000.0f)
+                  : settings->fCounterDamageBonusTimeout;
     auto timeoutMs = static_cast<int>(timeout * 1000.0f);
     damageBonusEndTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 
+    const char* src = "timed block";
+    if (fromTimedDodge) {
+        src = "timed dodge";
+    } else if (fromWardTimedBlock) {
+        src = "ward timed block";
+    }
+
     logger::info("[COUNTER DAMAGE] Armed +{:.0f}% bonus (timeout {:.1f}s, source {})",
-        damagePercent, timeout, fromTimedDodge ? "timed dodge" : "timed block");
+        damagePercent, timeout, src);
     spdlog::default_logger()->flush();
 
     if (settings->bDebugLogging) {
@@ -1735,6 +2082,9 @@ void CounterAttackState::RemoveDamageBonus()
     const float was = appliedDamageBonus;
     appliedDamageBonus = 0.0f;
     damageBonusActive = false;
+    spellFiredDuringWindow = false;
+    trackedSpellProjectile = {};
+    projectileScanRetries = 0;
 
     logger::info("[COUNTER DAMAGE] Bonus cleared (was +{:.0f}%)", was);
     spdlog::default_logger()->flush();
@@ -1836,8 +2186,9 @@ RE::BSEventNotifyControl CounterAttackInputHandler::ProcessEvent(
     }
     
     auto* settings = Settings::GetSingleton();
-    bool counterEnabled = settings->bEnableCounterAttack || 
-                          (settings->bTimedDodgeCounterAttack && TimedDodgeState::IsActive());
+    bool counterEnabled = settings->bEnableCounterAttack ||
+                          (settings->bTimedDodgeCounterAttack && TimedDodgeState::IsActive()) ||
+                          (settings->bWardTimedBlockCounterAttack && CounterAttackState::fromWardTimedBlock);
     if (!counterEnabled || !CounterAttackState::IsInWindow()) {
         return RE::BSEventNotifyControl::kContinue;
     }
@@ -1860,6 +2211,7 @@ RE::BSEventNotifyControl CounterAttackInputHandler::ProcessEvent(
         
         // Check standard Skyrim attack controls
         bool isAttackInput = false;
+        bool isLeftHandInput = false;
         auto* controlMap = RE::ControlMap::GetSingleton();
         if (controlMap) {
             std::string_view userEvent = controlMap->GetUserEventName(
@@ -1868,19 +2220,67 @@ RE::BSEventNotifyControl CounterAttackInputHandler::ProcessEvent(
                 RE::ControlMap::InputContextID::kGameplay
             );
             
-            if (userEvent == "Right Attack/Block" || userEvent == "Left Attack/Block" ||
-                userEvent == "Attack" || userEvent == "Power Attack") {
+            if (userEvent == "Right Attack/Block" || userEvent == "Attack" || userEvent == "Power Attack") {
                 isAttackInput = true;
+                isLeftHandInput = false;
+            } else if (userEvent == "Left Attack/Block") {
+                isAttackInput = true;
+                isLeftHandInput = true;
             }
         }
         
-        // Also check OneClickPowerAttack's custom power attack key
+        // Also check OneClickPowerAttack's custom power attack key (always right-hand)
         if (!isAttackInput && OCPAKeys::IsOCPAKey(buttonEvent)) {
             isAttackInput = true;
+            isLeftHandInput = false;
         }
         
         if (isAttackInput) {
-            CounterAttackState::OnAttackInput();
+            // Before treating this as a melee counter, check whether the hand
+            // being used has a spell equipped. If so, the player is trying to
+            // CAST a spell (e.g. ward counter spell), not punch/swing a weapon.
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            bool attackingHandHasSpell = false;
+            if (player) {
+                auto handHasSpell = [&](bool leftHand) -> bool {
+                    auto* eq = player->GetEquippedObject(leftHand);
+                    if (eq && !eq->IsWeapon()) {
+                        return true;  // SpellItem, torch, or other non-weapon
+                    }
+                    if (!eq) {
+                        // GetEquippedObject can return null for a spell that is
+                        // equipped but not yet casting. Fall back to MagicCaster.
+                        auto src = leftHand ? RE::MagicSystem::CastingSource::kLeftHand
+                                            : RE::MagicSystem::CastingSource::kRightHand;
+                        if (auto* mc = player->GetMagicCaster(src)) {
+                            if (mc->currentSpell) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                };
+                attackingHandHasSpell = handHasSpell(isLeftHandInput);
+            }
+
+            if (!attackingHandHasSpell) {
+                CounterAttackState::OnAttackInput();
+            } else if (CounterAttackState::inWindow && CounterAttackState::fromTimedDodge &&
+                       settings->bTimedDodgeCounterSpellHit) {
+                // Spell in hand + timed dodge counter window → spell counter attack.
+                // Cancel the dodge animation so the player can cast freely.
+                if (TimedDodgeState::IsSlomoActive()) {
+                    TimedDodgeState::End();
+                }
+                player->NotifyAnimationGraph("TKDodgeStop");
+                CounterAttackState::ApplyDamageBonus(true);
+                CounterAttackState::OnSpellFired();
+
+                if (settings->bDebugLogging) {
+                    logger::info("[COUNTER] Timed dodge spell counter initiated");
+                    RE::DebugNotification("[TD] Counter spell!");
+                }
+            }
             break;
         }
     }
@@ -2363,7 +2763,520 @@ RE::BSEventNotifyControl CounterAnimEventHandler::ProcessEvent(
     // Forward animation events to the counter slow time state
     CounterSlowTimeState::OnAnimEvent(a_event->tag.c_str());
 
+    // Detect spell fire during ward counter window so the damage bonus
+    // persists until the projectile actually lands on an enemy.
+    if (CounterAttackState::fromWardTimedBlock && CounterAttackState::damageBonusActive) {
+        const auto& tag = a_event->tag;
+        if (tag == "MRh_SpellFire_Event" || tag == "MLh_SpellFire_Event" ||
+            tag == "MRh_Spell_Fire"      || tag == "MLh_Spell_Fire") {
+            CounterAttackState::OnSpellFired();
+        }
+    }
+
     return RE::BSEventNotifyControl::kContinue;
+}
+
+namespace
+{
+	// Ward effects carry the "MagicWard" keyword (KWDA).  Using HasKeywordString reads
+	// the KWDA array directly — no external lookup required, works for vanilla and mods.
+	static bool EffectIsWard(RE::EffectSetting* mgef)
+	{
+		if (!mgef) {
+			return false;
+		}
+		// Fast path: cached pointer (set during InitWardKeyword, may be null if lookup failed)
+		if (WardTimedBlockState::wardKeyword && mgef->HasKeyword(WardTimedBlockState::wardKeyword)) {
+			return true;
+		}
+		// Reliable fallback: scan the KWDA array by EditorID string — never needs a pointer
+		return mgef->HasKeywordString("MagicWard");
+	}
+
+	bool MagicItemHasWardEffect(RE::MagicItem* a_spell)
+	{
+		if (!a_spell) {
+			return false;
+		}
+		for (auto& eff : a_spell->effects) {
+			if (eff && eff->baseEffect && EffectIsWard(eff->baseEffect)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool IsDualCastWard(RE::Actor* a_player)
+	{
+		if (!a_player) {
+			return false;
+		}
+		auto* left = a_player->GetMagicCaster(RE::MagicSystem::CastingSource::kLeftHand);
+		auto* right = a_player->GetMagicCaster(RE::MagicSystem::CastingSource::kRightHand);
+		const bool lw = left && MagicItemHasWardEffect(left->currentSpell);
+		const bool rw = right && MagicItemHasWardEffect(right->currentSpell);
+		return lw && rw;
+	}
+
+	float SumMagicDamageApprox(RE::MagicItem* a_magic)
+	{
+		if (!a_magic) {
+			return 0.0f;
+		}
+		float sum = 0.0f;
+		for (auto& eff : a_magic->effects) {
+			if (eff && eff->baseEffect) {
+				const auto arch = eff->baseEffect->data.archetype;
+				if (arch == RE::EffectArchetypes::ArchetypeID::kValueModifier &&
+					eff->baseEffect->data.primaryAV == RE::ActorValue::kHealth) {
+					sum += eff->effectItem.magnitude;
+				}
+			}
+		}
+		if (sum <= 0.0f && !a_magic->effects.empty() && a_magic->effects[0]) {
+			sum = a_magic->effects[0]->effectItem.magnitude;
+		}
+		return sum;
+	}
+
+	// Ward spell counter: concentration/direct spell (source) or magic projectile (spell on projectile)
+	bool IsWardSpellCounterHit(const RE::TESHitEvent* a_event, bool& a_outSpell)
+	{
+		a_outSpell = false;
+		if (!a_event) {
+			return false;
+		}
+		if (a_event->source != 0) {
+			auto* src = RE::TESForm::LookupByID(a_event->source);
+			if (src && src->IsMagicItem()) {
+				auto* mi = src->As<RE::MagicItem>();
+				if (mi && !MagicItemHasWardEffect(mi)) {
+					a_outSpell = true;
+					return true;
+				}
+			}
+		}
+		if (a_event->projectile != 0) {
+			RE::NiPointer<RE::TESObjectREFR> refr =
+				RE::TESObjectREFR::LookupByHandle(static_cast<RE::RefHandle>(a_event->projectile));
+			if (!refr) {
+				return false;
+			}
+			auto* proj = refr->As<RE::Projectile>();
+			if (!proj) {
+				return false;
+			}
+			auto& rd = proj->GetProjectileRuntimeData();
+			if (rd.spell) {
+				a_outSpell = true;
+				return true;
+			}
+		}
+		return false;
+	}
+}  // namespace
+
+//=============================================================================
+// Ward timed block — window from ward MGEF apply; melee cancels damage + effects
+//=============================================================================
+
+void WardTimedBlockState::InitWardKeyword()
+{
+	// MagicWard vanilla KYWD full FormID = 0x0001EA6A (Skyrim.esm, load-order 0x00)
+	wardKeyword = RE::TESForm::LookupByID<RE::BGSKeyword>(0x1EA6A);
+	if (wardKeyword) {
+		logger::info("[WARD TB] MagicWard keyword loaded via LookupByID (FormID {:08X})", wardKeyword->GetFormID());
+		return;
+	}
+	// Fallback: TESDataHandler by plugin name
+	auto* dh = RE::TESDataHandler::GetSingleton();
+	if (dh) {
+		wardKeyword = dh->LookupForm<RE::BGSKeyword>(0x1EA6A, "Skyrim.esm");
+		if (wardKeyword) {
+			logger::info("[WARD TB] MagicWard keyword loaded via TESDataHandler (FormID {:08X})", wardKeyword->GetFormID());
+			return;
+		}
+	}
+	// HasKeywordString("MagicWard") will be used as the primary check regardless — this is non-fatal
+	logger::warn("[WARD TB] MagicWard keyword pointer lookup failed — HasKeywordString fallback will be used");
+}
+
+bool WardTimedBlockState::IsInWindow()
+{
+	return inWindow;
+}
+
+bool WardTimedBlockState::IsOnCooldown()
+{
+	if (!onCooldown) {
+		return false;
+	}
+	return std::chrono::steady_clock::now() < cooldownEndTime;
+}
+
+void WardTimedBlockState::StartCooldown()
+{
+	auto* settings = Settings::GetSingleton();
+	onCooldown = true;
+	cooldownEndTime = std::chrono::steady_clock::now() +
+		std::chrono::milliseconds(static_cast<long long>(settings->fWardTimedBlockCooldown * 1000.0f));
+}
+
+void WardTimedBlockState::Update()
+{
+	const auto now = std::chrono::steady_clock::now();
+	if (onCooldown && now >= cooldownEndTime) {
+		onCooldown = false;
+	}
+	if (!inWindow) {
+		return;
+	}
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	if (!player) {
+		return;
+	}
+	// Keep health snapshot current so the TESHitEvent fallback path (non-Precision) can restore
+	// health accurately even if the player healed between window open and the hit landing.
+	auto* av = player->AsActorValueOwner();
+	if (av) {
+		const float hp = av->GetActorValue(RE::ActorValue::kHealth);
+		if (hp > healthSnapshot) {
+			healthSnapshot = hp;
+		}
+	}
+	if (now >= windowEnd) {
+		inWindow = false;
+		StartCooldown();
+		auto* settings = Settings::GetSingleton();
+		if (settings->bDebugLogging) {
+			logger::info("[WARD TB] Window expired without parry — cooldown started");
+		}
+	}
+}
+
+void WardTimedBlockState::RegisterPrecision()
+{
+	auto* api = reinterpret_cast<PRECISION_API::IVPrecision1*>(
+		PRECISION_API::RequestPluginAPI(PRECISION_API::InterfaceVersion::V1));
+
+	if (!api) {
+		logger::warn("[WARD TB] Precision not found — ward timed block will fall back to TESHitEvent (post-damage restore)."
+		             " Install Precision for true pre-hit prevention.");
+		return;
+	}
+
+	auto result = api->AddPreHitCallback(
+		SKSE::GetPluginHandle(),
+		[](const PRECISION_API::PrecisionHitData& hitData) -> PRECISION_API::PreHitCallbackReturn {
+			PRECISION_API::PreHitCallbackReturn ret;  // bIgnoreHit defaults to false
+
+			auto* settings = Settings::GetSingleton();
+			if (!settings->bEnableWardTimedBlock || !inWindow) {
+				return ret;
+			}
+
+			// Only intercept hits aimed at the player
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player || hitData.target != player) {
+				return ret;
+			}
+
+			auto* attacker = hitData.attacker;
+			if (!attacker) {
+				return ret;
+			}
+
+			// Direction check — vanilla wards cover the front 180°.
+			// Skip if the user wants omnidirectional coverage.
+			if (!settings->bWardOmnidirectional) {
+				// Build the player's forward vector from their yaw (radians).
+				// In Skyrim: yaw=0 → facing +Y (north), yaw=π/2 → facing +X (east).
+				const float yaw = player->GetAngle().z;
+				const RE::NiPoint3 playerFwd{ std::sin(yaw), std::cos(yaw), 0.0f };
+
+				// Horizontal direction from player to attacker
+				RE::NiPoint3 toAttacker = attacker->GetPosition() - player->GetPosition();
+				toAttacker.z = 0.0f;
+				const float lenSq = toAttacker.SqrLength();
+				if (lenSq > 0.001f) {
+					toAttacker /= std::sqrt(lenSq);  // normalise
+				}
+
+				// dot >= 0 → attacker within the front 180° → ward covers it
+				if (playerFwd.Dot(toAttacker) < 0.0f) {
+					if (settings->bDebugLogging) {
+						RE::DebugNotification("[WARD] Hit from behind — not parried (non-omni)");
+					}
+					return ret;
+				}
+			}
+
+			// Attempt the parry. Returns true on success, false if rejected (e.g. 2H ward rule).
+			const bool parried = OnMeleeHit(player, attacker);
+			ret.bIgnoreHit = parried;
+
+			if (settings->bDebugLogging) {
+				logger::info("[WARD TB] Precision PreHit: attacker='{}', parried={}", attacker->GetName(), parried);
+			}
+
+			return ret;
+		});
+
+	if (result == PRECISION_API::APIResult::OK) {
+		g_precisionAvailable = true;
+		logger::info("[WARD TB] Precision PreHit callback registered — hitbox-level ward parry active");
+	} else {
+		logger::warn("[WARD TB] Precision AddPreHitCallback failed (result={})", static_cast<uint8_t>(result));
+	}
+}
+
+void WardTimedBlockState::OnWardActivated(bool dualCast)
+{
+	auto* settings = Settings::GetSingleton();
+	if (!settings->bEnableWardTimedBlock) {
+		return;
+	}
+	if (WindowExclusion::IsBlocked()) {
+		if (settings->bDebugLogging) {
+			logger::info("[WARD TB] Skipped — another window activated too recently");
+		}
+		return;
+	}
+	if (IsOnCooldown()) {
+		// Mirror the regular timed block rule: if there are no enemies in combat nearby,
+		// ignore the cooldown entirely (same distance threshold, same cache).
+		// If enemies ARE nearby, restart the cooldown timer to punish spam-casting.
+		bool shouldIgnore = !CooldownState::GetNearbyEnemyCached();
+		if (shouldIgnore) {
+			if (settings->bDebugLogging) {
+				logger::info("[WARD TB] On cooldown but no enemies nearby — ignoring cooldown");
+			}
+		} else {
+			StartCooldown();
+			if (settings->bDebugLogging) {
+				logger::info("[WARD TB] Ward cast during cooldown — cooldown RESTARTED");
+				RE::DebugNotification("[WARD] Cooldown — blocked");
+			}
+			return;
+		}
+	}
+
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	if (!player) {
+		return;
+	}
+
+	// Window opens exactly once per cooldown cycle. The concentration spell ticks
+	// every ~250ms, but we must NOT refresh windowEnd on each tick — that would
+	// make the window perpetually open while the ward is held.
+	if (inWindow) {
+		// Already open — keep health snapshot current for the TESHitEvent fallback path.
+		auto* av = player->AsActorValueOwner();
+		if (av) {
+			const float hp = av->GetActorValue(RE::ActorValue::kHealth);
+			if (hp > healthSnapshot) healthSnapshot = hp;
+		}
+		return;
+	}
+
+	isDualCast = dualCast;
+	auto* av = player->AsActorValueOwner();
+	healthSnapshot = av ? av->GetActorValue(RE::ActorValue::kHealth) : 0.0f;
+	inWindow = true;
+	WindowExclusion::Stamp();
+	windowEnd = std::chrono::steady_clock::now() +
+		std::chrono::milliseconds(static_cast<long long>(settings->fWardTimedBlockWindowMs));
+
+	if (settings->bDebugLogging) {
+		logger::info("[WARD TB] Window opened (dualCast={}, {:.0f}ms, precision={})",
+			dualCast, settings->fWardTimedBlockWindowMs, g_precisionAvailable);
+		RE::DebugNotification(dualCast ? "[WARD] 2H ward active — parry open" : "[WARD] Ward active — parry open");
+	}
+}
+
+bool WardTimedBlockState::OnMeleeHit(RE::Actor* defender, RE::Actor* attacker)
+{
+	if (!inWindow) {
+		return false;
+	}
+
+	auto* settings = Settings::GetSingleton();
+
+	// Optional: require a dual-cast (2H) ward to parry two-handed weapon attacks
+	if (settings->bWardRequire2HForTwoHanders && !isDualCast && attacker) {
+		auto* weapon = attacker->GetEquippedObject(false);
+		if (weapon && weapon->IsWeapon()) {
+			auto* weap = weapon->As<RE::TESObjectWEAP>();
+			if (weap) {
+				const auto type = weap->GetWeaponType();
+				if (type == RE::WEAPON_TYPE::kTwoHandSword || type == RE::WEAPON_TYPE::kTwoHandAxe) {
+					inWindow = false;
+					logger::info("[WARD TB] 2H weapon attack — 1H ward insufficient (bWardRequire2HForTwoHanders=true)");
+					if (settings->bDebugLogging) {
+						RE::DebugNotification("[WARD TB] Need dual-cast ward for this attack");
+					}
+					return false;  // Rejected — hit should proceed normally
+				}
+			}
+		}
+	}
+
+	inWindow = false;
+
+	// Fallback damage cancel: when Precision is not available the hit fires through
+	// TESHitEvent (post-damage), so we restore health here.  When Precision IS available
+	// the hit is cancelled at the Havok level before any health loss, so this is a no-op.
+	if (settings->bWardTimedBlockDamageCancel && defender) {
+		auto* avOwner = defender->AsActorValueOwner();
+		if (avOwner) {
+			const float cur = avOwner->GetActorValue(RE::ActorValue::kHealth);
+			if (cur < healthSnapshot) {
+				avOwner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, healthSnapshot - cur);
+			}
+		}
+	}
+
+	lastAttackerHandle = attacker ? attacker->GetHandle() : RE::ActorHandle{};
+
+	auto* addon = TimedBlockAddon::GetSingleton();
+	addon->ApplyWardTimedBlockEffects(defender, attacker, isDualCast);
+	CounterAttackState::StartWardWindow(attacker);
+
+	// Successful parry — clear cooldown (consecutive ward parries are allowed, same rule as regular timed block).
+	onCooldown = false;
+
+	if (settings->bDebugLogging) {
+		logger::info("[WARD TB] Melee parry — attacker='{}', dualCast={}, precision={}, cooldown CLEARED",
+			attacker ? attacker->GetName() : "?", isDualCast, g_precisionAvailable);
+	}
+
+	return true;  // Parry consumed — Precision should ignore the hit
+}
+
+void WardTimedBlockState::PlayWardTimedBlockSound()
+{
+	auto* settings = Settings::GetSingleton();
+	if (!settings->bWardTimedBlockSound) {
+		return;
+	}
+	const float vol = settings->fWardTimedBlockSoundVolume;
+	const std::string file = settings->sWardTimedBlockSoundFile;
+
+	SKSE::GetTaskInterface()->AddTask([vol, file]() {
+		std::filesystem::path wavPath = std::filesystem::current_path();
+		wavPath /= "Data";
+		wavPath /= "SKSE";
+		wavPath /= "Plugins";
+		wavPath /= "SimpleTimedBlockAddons";
+		wavPath /= file;
+
+		if (std::filesystem::exists(wavPath)) {
+			if (!LoadWAVWithVolume(wavPath, vol, g_wardTimedBlockAudioBuffer)) {
+				logger::error("[WARD TB] Failed to load WAV: {}", wavPath.string());
+				return;
+			}
+			const BOOL ok = PlaySoundA(reinterpret_cast<LPCSTR>(g_wardTimedBlockAudioBuffer.data()),
+				NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+			if (!ok) {
+				logger::error("[WARD TB] PlaySoundA failed for {}", wavPath.string());
+			}
+		} else {
+			logger::warn("[WARD TB] WAV not found: {}", wavPath.string());
+		}
+	});
+}
+
+void WardTimedBlockState::PlayWardCounterSpellSound()
+{
+	auto* settings = Settings::GetSingleton();
+	if (!settings->bWardCounterSpellSound) {
+		return;
+	}
+	const float vol = settings->fWardCounterSpellSoundVolume;
+	const std::string file = settings->sWardCounterSpellSoundFile;
+
+	SKSE::GetTaskInterface()->AddTask([vol, file]() {
+		std::filesystem::path wavPath = std::filesystem::current_path();
+		wavPath /= "Data";
+		wavPath /= "SKSE";
+		wavPath /= "Plugins";
+		wavPath /= "SimpleTimedBlockAddons";
+		wavPath /= file;
+
+		if (std::filesystem::exists(wavPath)) {
+			if (!LoadWAVWithVolume(wavPath, vol, g_wardCounterSpellAudioBuffer)) {
+				logger::error("[WARD COUNTER SPELL] Failed to load WAV: {}", wavPath.string());
+				return;
+			}
+			const BOOL ok = PlaySoundA(reinterpret_cast<LPCSTR>(g_wardCounterSpellAudioBuffer.data()),
+				NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+			if (!ok) {
+				logger::error("[WARD COUNTER SPELL] PlaySoundA failed for {}", wavPath.string());
+			}
+		} else {
+			logger::warn("[WARD COUNTER SPELL] WAV not found: {}", wavPath.string());
+		}
+	});
+}
+
+WardEffectHandler* WardEffectHandler::GetSingleton()
+{
+	static WardEffectHandler singleton;
+	return &singleton;
+}
+
+void WardEffectHandler::Register()
+{
+	WardTimedBlockState::InitWardKeyword();
+	RE::ScriptEventSourceHolder* holder = RE::ScriptEventSourceHolder::GetSingleton();
+	if (holder) {
+		holder->AddEventSink(GetSingleton());
+		logger::info("Ward effect handler (TESMagicEffectApplyEvent) registered");
+	}
+}
+
+RE::BSEventNotifyControl WardEffectHandler::ProcessEvent(
+	const RE::TESMagicEffectApplyEvent* a_event,
+	RE::BSTEventSource<RE::TESMagicEffectApplyEvent>*)
+{
+	if (!a_event) {
+		return RE::BSEventNotifyControl::kContinue;
+	}
+
+	auto* target = a_event->target.get();
+	auto* caster = a_event->caster.get();
+	if (!target || !caster) {
+		return RE::BSEventNotifyControl::kContinue;
+	}
+
+	auto* targetActor = target->As<RE::Actor>();
+	auto* casterActor = caster->As<RE::Actor>();
+	if (!targetActor || !casterActor || !targetActor->IsPlayerRef() || casterActor != targetActor) {
+		return RE::BSEventNotifyControl::kContinue;
+	}
+
+	auto* mgef = RE::TESForm::LookupByID<RE::EffectSetting>(a_event->magicEffect);
+	if (!mgef) {
+		return RE::BSEventNotifyControl::kContinue;
+	}
+
+	auto* settings = Settings::GetSingleton();
+	if (settings->bDebugLogging) {
+		logger::info("[WARD TB] MagicEffectApply on player: '{}' (FormID {:08X}), archetype={}",
+			mgef->GetFullName(), mgef->GetFormID(),
+			static_cast<int>(mgef->data.archetype));
+	}
+
+	if (!EffectIsWard(mgef)) {
+		return RE::BSEventNotifyControl::kContinue;
+	}
+
+	const bool dual = IsDualCastWard(targetActor);
+	if (settings->bDebugLogging) {
+		logger::info("[WARD TB] Ward effect detected via event: '{}', dual={}", mgef->GetFullName(), dual);
+	}
+	WardTimedBlockState::OnWardActivated(dual);
+	return RE::BSEventNotifyControl::kContinue;
 }
 
 //=============================================================================
@@ -2406,10 +3319,6 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
         return RE::BSEventNotifyControl::kContinue;
     }
     
-    if (a_event->projectile) {
-        return RE::BSEventNotifyControl::kContinue;
-    }
-    
     RE::Actor* target = a_event->target ? a_event->target->As<RE::Actor>() : nullptr;
     if (!target) {
         return RE::BSEventNotifyControl::kContinue;
@@ -2417,21 +3326,129 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
 
     auto* settings = Settings::GetSingleton();
 
-    // Calculate bonus damage from the player's weapon base damage
-    float baseDamage = 0.0f;
-    auto* weapon = player->GetEquippedObject(false);
-    if (weapon && weapon->IsWeapon()) {
-        auto* weap = weapon->As<RE::TESObjectWEAP>();
-        if (weap) {
-            baseDamage = static_cast<float>(weap->GetAttackDamage());
+    bool isSpellCounter = false;
+    bool isProjectileHit = false;
+
+    const bool spellCounterAllowed =
+        (CounterAttackState::fromWardTimedBlock && settings->bWardCounterSpellHit) ||
+        (CounterAttackState::fromTimedDodge && settings->bTimedDodgeCounterSpellHit &&
+         CounterAttackState::spellFiredDuringWindow);
+
+    if (a_event->projectile) {
+        if (!spellCounterAllowed) {
+            return RE::BSEventNotifyControl::kContinue;
         }
-    }
-    if (baseDamage <= 0.0f) {
-        baseDamage = 10.0f;
+        bool sp = false;
+        if (!IsWardSpellCounterHit(a_event, sp) || !sp) {
+            return RE::BSEventNotifyControl::kContinue;
+        }
+        isSpellCounter = true;
+        isProjectileHit = true;
+    } else if (spellCounterAllowed) {
+        // Non-projectile hit (projectile==0).  Two possibilities:
+        //   A) Concentration/beam spell — these NEVER produce projectiles, so
+        //      projectile==0 IS the real hit.  Accept it.
+        //   B) Fire-and-forget (charge-and-release) spell — Skyrim fires a
+        //      TESHitEvent with projectile==0 at the instant the spell leaves the
+        //      player's hand ("muzzle event").  The real impact arrives later as a
+        //      separate event with projectile!=0.  ALWAYS reject it here.
+        //
+        // Distinguishing the two by scanning Projectile::Manager is unreliable
+        // because the projectile may not have spawned yet on the same frame as the
+        // muzzle event.  Instead we check the spell's CastingType directly — this
+        // is authoritative and frame-independent.
+        bool isConcentration = false;
+        if (a_event->source != 0) {
+            auto* src = RE::TESForm::LookupByID(a_event->source);
+            if (src && src->IsMagicItem()) {
+                auto* mi = src->As<RE::MagicItem>();
+                if (mi) {
+                    isConcentration =
+                        (mi->GetCastingType() == RE::MagicSystem::CastingType::kConcentration);
+                }
+            }
+        }
+
+        if (isConcentration) {
+            bool sp = false;
+            if (IsWardSpellCounterHit(a_event, sp) && sp) {
+                isSpellCounter = true;
+            }
+        }
+        // Fire-and-forget with projectile==0 → muzzle event; the real projectile
+        // impact will arrive via the projectile!=0 path above.
     }
 
-    float damageMult = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult);
-    baseDamage *= damageMult;
+    // If the hit came from a spell source but wasn't classified as a valid spell
+    // counter, never fall through to the melee path — a spell hit should not
+    // consume the melee counter bonus. (Projectile spell hits that aren't ward
+    // counters already return early above; this guards the projectile==0 case.)
+    if (!isSpellCounter && a_event->source != 0) {
+        auto* hitSrc = RE::TESForm::LookupByID(a_event->source);
+        if (hitSrc && hitSrc->IsMagicItem()) {
+            return RE::BSEventNotifyControl::kContinue;
+        }
+    }
+
+    const bool fromWard = CounterAttackState::fromWardTimedBlock;
+    const bool fromDodge = CounterAttackState::fromTimedDodge;
+
+    float baseDamage = 0.0f;
+    if (isSpellCounter) {
+        if (a_event->source != 0) {
+            auto* src = RE::TESForm::LookupByID(a_event->source);
+            if (src && src->IsMagicItem()) {
+                baseDamage = SumMagicDamageApprox(src->As<RE::MagicItem>());
+            }
+        }
+        if (baseDamage <= 0.0f && a_event->projectile != 0) {
+            RE::NiPointer<RE::TESObjectREFR> refr =
+                RE::TESObjectREFR::LookupByHandle(static_cast<RE::RefHandle>(a_event->projectile));
+            if (refr) {
+                if (auto* proj = refr->As<RE::Projectile>()) {
+                    auto& rd = proj->GetProjectileRuntimeData();
+                    if (rd.spell) {
+                        baseDamage = SumMagicDamageApprox(rd.spell);
+                    }
+                }
+            }
+        }
+        // For non-projectile (AoE explosion) hits, a_event->source is often an
+        // internal sub-effect with magnitude ~1.0, not the actual SpellItem.
+        // If the damage looks implausibly low, check the player's equipped spells —
+        // the real SpellItem (which returns the correct magnitude) is still there.
+        if (!isProjectileHit && baseDamage <= 2.0f) {
+            for (bool lh : { false, true }) {
+                auto* eq = player->GetEquippedObject(lh);
+                if (eq && eq->IsMagicItem()) {
+                    auto* mi = eq->As<RE::MagicItem>();
+                    if (mi && !MagicItemHasWardEffect(mi)) {
+                        float d = SumMagicDamageApprox(mi);
+                        if (d > baseDamage) {
+                            baseDamage = d;
+                        }
+                    }
+                }
+            }
+        }
+        if (baseDamage <= 0.0f) {
+            baseDamage = 20.0f;
+        }
+    } else {
+        auto* weapon = player->GetEquippedObject(false);
+        if (weapon && weapon->IsWeapon()) {
+            auto* weap = weapon->As<RE::TESObjectWEAP>();
+            if (weap) {
+                baseDamage = static_cast<float>(weap->GetAttackDamage());
+            }
+        }
+        if (baseDamage <= 0.0f) {
+            baseDamage = 10.0f;
+        }
+
+        float damageMult = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult);
+        baseDamage *= damageMult;
+    }
 
     float bonusPercent = CounterAttackState::appliedDamageBonus / 100.0f;
     float bonusDamage = baseDamage * bonusPercent;
@@ -2442,6 +3459,11 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
     CounterAttackState::RemoveDamageBonus();
 
     if (bonusDamage > 0.0f) {
+        if ((fromWard || fromDodge) && isSpellCounter && settings->bEnableCounterSlowTime) {
+            CounterSlowTimeState::End();
+            CounterSlowTimeState::Start();
+        }
+
         bool castOk = false;
 
         if (CounterAttackState::counterSpell && !CounterAttackState::counterSpell->effects.empty()) {
@@ -2471,16 +3493,27 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
                 -bonusDamage);
         }
 
-        logger::info("[COUNTER DAMAGE] Hit '{}': base ~{:.1f}, +{:.0f}% = +{:.1f} bonus damage (spell={})",
+        logger::info("[COUNTER DAMAGE] Hit '{}': base ~{:.1f}, +{:.0f}% = +{:.1f} bonus damage (spell={}, wardSpell={})",
             target->GetName(), baseDamage, bonusPercent * 100.0f,
-            bonusDamage, castOk ? "yes" : "fallback");
+            bonusDamage, castOk ? "yes" : "fallback", isSpellCounter);
         spdlog::default_logger()->flush();
 
         if (settings->bDebugLogging) {
             RE::DebugNotification(fmt::format("[TB] Counter! +{:.0f} damage", bonusDamage).c_str());
         }
 
-        PlayCounterStrikeSound();
+        if (isSpellCounter && settings->bWardCounterSpellSound) {
+            // Ward spell counter hit (projectile or direct/concentration) — play spell sound.
+            WardTimedBlockState::PlayWardCounterSpellSound();
+        } else if (!isSpellCounter) {
+            // Melee counter hit — play melee sound.
+            PlayCounterStrikeSound();
+        }
+    }
+
+    if (fromWard) {
+        CounterAttackState::inWindow = false;
+        CounterAttackState::fromWardTimedBlock = false;
     }
     
     return RE::BSEventNotifyControl::kContinue;
@@ -2539,6 +3572,13 @@ void TimedDodgeState::OnAnimEvent(const char* eventName)
 void TimedDodgeState::OnDodgeEvent()
 {
     auto* settings = Settings::GetSingleton();
+
+    if (WindowExclusion::IsBlocked()) {
+        if (settings->bDebugLogging) {
+            logger::info("[TIMED DODGE] Skipped — another window activated too recently");
+        }
+        return;
+    }
     
     if (IsOnCooldown()) {
         if (settings->bDebugLogging) {
@@ -2584,6 +3624,7 @@ void TimedDodgeState::Start(RE::Actor* attacker)
     
     active = true;
     slomoActive = true;
+    WindowExclusion::Stamp();
     
     auto now = std::chrono::steady_clock::now();
     effectStartTime = now;
@@ -2622,6 +3663,10 @@ void TimedDodgeState::Start(RE::Actor* attacker)
     if (settings->bTimedDodgeCounterAttack) {
         CounterAttackState::inWindow = true;
         CounterAttackState::fromTimedDodge = true;
+        CounterAttackState::fromWardTimedBlock = false;
+        CounterAttackState::spellFiredDuringWindow = false;
+        CounterAttackState::trackedSpellProjectile = {};
+        CounterAttackState::projectileScanRetries = 0;
         CounterAttackState::windowEndTime = now + std::chrono::milliseconds(
             static_cast<long long>(settings->fTimedDodgeCounterWindowMs));
         if (attacker) {

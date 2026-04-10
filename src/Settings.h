@@ -139,6 +139,8 @@ public:
     float fTimedDodgeCounterLungeSpeed{ 2.0f };     // Lunge speed for timed dodge counter
     int   iTimedDodgeCounterLungeCurve{ 0 };         // Velocity curve for timed dodge lunge (same enum as iCounterLungeCurve)
     float fTimedDodgeCounterLungeMeleeStopDistance{ 128.0f }; // Stop distance for timed dodge lunge
+    bool  bTimedDodgeCounterSpellHit{ true };                  // Allow spell counter attacks from timed dodge
+    float fTimedDodgeCounterSpellDamagePercent{ 50.0f };       // Spell counter damage bonus % for timed dodge
 
     // Timed Dodge Radial Blur
     bool  bTimedDodgeRadialBlur{ true };          // Radial blur during slomo
@@ -162,6 +164,53 @@ public:
     // Timed Dodge Sound
     bool  bTimedDodgeSound{ true };               // Play sound on timed dodge
     float fTimedDodgeSoundVolume{ 1.0f };         // Volume for timed dodge WAV (0.0 - 1.0)
+
+    //==========================================================================
+    // Ward Timed Block — melee hits during ward timing window (separate from shield block)
+    //==========================================================================
+    bool  bEnableWardTimedBlock{ true };
+    float fWardTimedBlockWindowMs{ 500.0f };
+
+    bool  bWardTimedBlockStagger{ true };
+    float fWardSmallStaggerMagnitude{ 0.5f };   // Single-hand ward
+    float fWardLargeStaggerMagnitude{ 1.0f };    // Dual-cast ward (both hands)
+
+    bool  bWardTimedBlockDamageCancel{ true };
+
+    bool  bWardTimedBlockSound{ true };
+    std::string sWardTimedBlockSoundFile{ "wardtimedblock.wav" };
+    float fWardTimedBlockSoundVolume{ 1.0f };
+
+    bool  bWardTimedBlockCounterAttack{ true };
+    float fWardCounterWindowMs{ 2000.0f };
+    float fWardCounterDamagePercent{ 50.0f };  // Separate damage bonus % for ward magic counter
+
+    bool  bWardCounterSpellHit{ true };
+    // How long (ms) after a counter spell is CAST to keep the bonus alive while
+    // the projectile travels (or a concentration spell starts hitting).
+    // If nothing lands in this window the bonus expires.
+    float fWardCounterSpellInFlightMs{ 5000.0f };
+    bool  bWardCounterSpellSound{ true };
+    std::string sWardCounterSpellSoundFile{ "wardcounterspell.wav" };
+    float fWardCounterSpellSoundVolume{ 1.0f };
+
+    float fWardTimedBlockCooldown{ 1.0f };
+
+    // Melee range for ward hit detection (game units)
+    float fWardMeleeDetectionRange{ 300.0f };
+
+    // 2H requirement: dual-cast ward needed to parry 2H weapon attacks
+    bool  bWardRequire2HForTwoHanders{ false };
+
+    // Omnidirectional ward — if false (default), only attacks from the front 180° are parried
+    bool  bWardOmnidirectional{ false };
+
+    // Magicka restore on successful ward timed block
+    bool  bWardTimedBlockMagickaRestore{ true };
+    float fWardMagickaRestorePercent{ 50.0f };
+
+    // Window Mutual Exclusion — prevents timed block, ward, and dodge from chaining
+    float fWindowExclusionMs{ 1000.0f };
 
     // Debug
     bool bDebugLogging{ false };

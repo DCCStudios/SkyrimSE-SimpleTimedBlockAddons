@@ -118,6 +118,8 @@ void Settings::LoadSettings() {
     fTimedDodgeCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeSpeed", 2.0));
     iTimedDodgeCounterLungeCurve = static_cast<int>(ini.GetLongValue("TimedDodge", "iCounterLungeCurve", 0));
     fTimedDodgeCounterLungeMeleeStopDistance = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeMeleeStop", 128.0));
+    bTimedDodgeCounterSpellHit = ini.GetBoolValue("TimedDodge", "bCounterSpellHit", true);
+    fTimedDodgeCounterSpellDamagePercent = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterSpellDamagePercent", 50.0));
     bTimedDodgeRadialBlur = ini.GetBoolValue("TimedDodge", "bRadialBlur", true);
     fTimedDodgeBlurStrength = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurStrength", 0.3));
     fTimedDodgeBlurBlendSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurBlendSpeed", 5.0));
@@ -131,6 +133,34 @@ void Settings::LoadSettings() {
     fTimedDodgeAttackerSlowDuration = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fAttackerSlowDuration", 1.5));
     bTimedDodgeSound = ini.GetBoolValue("TimedDodge", "bSound", true);
     fTimedDodgeSoundVolume = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fSoundVolume", 1.0));
+
+    // Ward Timed Block
+    bEnableWardTimedBlock = ini.GetBoolValue("WardTimedBlock", "bEnabled", true);
+    fWardTimedBlockWindowMs = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fWindowMs", 500.0));
+    bWardTimedBlockStagger = ini.GetBoolValue("WardTimedBlock", "bStagger", true);
+    fWardSmallStaggerMagnitude = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fSmallStagger", 0.5));
+    fWardLargeStaggerMagnitude = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fLargeStagger", 1.0));
+    bWardTimedBlockDamageCancel = ini.GetBoolValue("WardTimedBlock", "bDamageCancel", true);
+    bWardTimedBlockSound = ini.GetBoolValue("WardTimedBlock", "bSound", true);
+    sWardTimedBlockSoundFile = ini.GetValue("WardTimedBlock", "sSoundFile", "wardtimedblock.wav");
+    fWardTimedBlockSoundVolume = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fSoundVolume", 1.0));
+    bWardTimedBlockCounterAttack = ini.GetBoolValue("WardTimedBlock", "bCounterAttack", true);
+    fWardCounterWindowMs = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fCounterWindowMs", 2000.0));
+    fWardCounterDamagePercent = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fCounterDamagePercent", 50.0));
+    bWardCounterSpellHit = ini.GetBoolValue("WardTimedBlock", "bCounterSpellHit", true);
+    fWardCounterSpellInFlightMs = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fCounterSpellInFlightMs", 5000.0));
+    bWardCounterSpellSound = ini.GetBoolValue("WardTimedBlock", "bCounterSpellSound", true);
+    sWardCounterSpellSoundFile = ini.GetValue("WardTimedBlock", "sCounterSpellSoundFile", "wardcounterspell.wav");
+    fWardCounterSpellSoundVolume = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fCounterSpellSoundVolume", 1.0));
+    fWardTimedBlockCooldown = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fCooldown", 1.0));
+    fWardMeleeDetectionRange = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fMeleeDetectionRange", 300.0));
+    bWardRequire2HForTwoHanders = ini.GetBoolValue("WardTimedBlock", "bRequire2HForTwoHanders", false);
+    bWardOmnidirectional = ini.GetBoolValue("WardTimedBlock", "bOmnidirectional", false);
+    bWardTimedBlockMagickaRestore = ini.GetBoolValue("WardTimedBlock", "bMagickaRestore", true);
+    fWardMagickaRestorePercent = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fMagickaRestorePercent", 50.0));
+
+    // Window mutual exclusion
+    fWindowExclusionMs = static_cast<float>(ini.GetDoubleValue("General", "fWindowExclusionMs", 1000.0));
 
     // Debug logging
     bDebugLogging = ini.GetBoolValue("Log", "Debug", false);
@@ -152,8 +182,19 @@ void Settings::LoadSettings() {
     fCounterLungeSpeed = std::clamp(fCounterLungeSpeed, 0.1f, 50.0f);
     fTimedDodgeCounterLungeSpeed = std::clamp(fTimedDodgeCounterLungeSpeed, 0.1f, 50.0f);
     fTimedDodgeCounterLungeMeleeStopDistance = std::clamp(fTimedDodgeCounterLungeMeleeStopDistance, 32.0f, 512.0f);
+    fTimedDodgeCounterSpellDamagePercent = std::clamp(fTimedDodgeCounterSpellDamagePercent, 10.0f, 500.0f);
     iCounterLungeCurve = std::clamp(iCounterLungeCurve, 0, 5);
     iTimedDodgeCounterLungeCurve = std::clamp(iTimedDodgeCounterLungeCurve, 0, 5);
+    fWardTimedBlockWindowMs = std::clamp(fWardTimedBlockWindowMs, 50.0f, 2000.0f);
+    fWardSmallStaggerMagnitude = std::clamp(fWardSmallStaggerMagnitude, 0.0f, 2.0f);
+    fWardLargeStaggerMagnitude = std::clamp(fWardLargeStaggerMagnitude, 0.0f, 2.0f);
+    fWardCounterWindowMs = std::clamp(fWardCounterWindowMs, 50.0f, 10000.0f);
+    fWardCounterDamagePercent = std::clamp(fWardCounterDamagePercent, 0.0f, 1000.0f);
+    fWardCounterSpellInFlightMs = std::clamp(fWardCounterSpellInFlightMs, 100.0f, 30000.0f);
+    fWardTimedBlockCooldown = std::clamp(fWardTimedBlockCooldown, 0.0f, 10.0f);
+    fWardMagickaRestorePercent = std::clamp(fWardMagickaRestorePercent, 0.0f, 100.0f);
+    fWardMeleeDetectionRange = std::clamp(fWardMeleeDetectionRange, 50.0f, 1000.0f);
+    fWindowExclusionMs = std::clamp(fWindowExclusionMs, 0.0f, 5000.0f);
     
     logger::info("Settings loaded successfully");
     logger::info("  ParryWindow: {}ms", fParryWindowDurationMs);
@@ -180,6 +221,9 @@ void Settings::LoadSettings() {
     logger::info("    CounterWindow: {:.0f}ms, CounterDmg: +{}% (timeout={}s), CounterLunge: {} (speed={} u/s), Sound: {} (vol={}%)",
         fTimedDodgeCounterWindowMs, fTimedDodgeCounterDamagePercent, fTimedDodgeCounterDamageTimeout,
         bTimedDodgeCounterLunge, fTimedDodgeCounterLungeSpeed, bTimedDodgeSound, fTimedDodgeSoundVolume * 100.0f);
+    logger::info("  WardTimedBlock: {} (window={}ms, cooldown={}s, counter={}, spellHit={})",
+        bEnableWardTimedBlock, fWardTimedBlockWindowMs, fWardTimedBlockCooldown,
+        bWardTimedBlockCounterAttack, bWardCounterSpellHit);
     logger::info("  Debug: {}", bDebugLogging);
 }
 
@@ -300,6 +344,8 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fCounterLungeSpeed", fTimedDodgeCounterLungeSpeed);
     ini.SetLongValue("TimedDodge", "iCounterLungeCurve", iTimedDodgeCounterLungeCurve);
     ini.SetDoubleValue("TimedDodge", "fCounterLungeMeleeStop", fTimedDodgeCounterLungeMeleeStopDistance);
+    ini.SetBoolValue("TimedDodge", "bCounterSpellHit", bTimedDodgeCounterSpellHit);
+    ini.SetDoubleValue("TimedDodge", "fCounterSpellDamagePercent", fTimedDodgeCounterSpellDamagePercent);
     ini.SetBoolValue("TimedDodge", "bRadialBlur", bTimedDodgeRadialBlur);
     ini.SetDoubleValue("TimedDodge", "fBlurStrength", fTimedDodgeBlurStrength);
     ini.SetDoubleValue("TimedDodge", "fBlurBlendSpeed", fTimedDodgeBlurBlendSpeed);
@@ -313,6 +359,33 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fAttackerSlowDuration", fTimedDodgeAttackerSlowDuration);
     ini.SetBoolValue("TimedDodge", "bSound", bTimedDodgeSound);
     ini.SetDoubleValue("TimedDodge", "fSoundVolume", fTimedDodgeSoundVolume);
+
+    ini.SetBoolValue("WardTimedBlock", "bEnabled", bEnableWardTimedBlock);
+    ini.SetDoubleValue("WardTimedBlock", "fWindowMs", fWardTimedBlockWindowMs);
+    ini.SetBoolValue("WardTimedBlock", "bStagger", bWardTimedBlockStagger);
+    ini.SetDoubleValue("WardTimedBlock", "fSmallStagger", fWardSmallStaggerMagnitude);
+    ini.SetDoubleValue("WardTimedBlock", "fLargeStagger", fWardLargeStaggerMagnitude);
+    ini.SetBoolValue("WardTimedBlock", "bDamageCancel", bWardTimedBlockDamageCancel);
+    ini.SetBoolValue("WardTimedBlock", "bSound", bWardTimedBlockSound);
+    ini.SetValue("WardTimedBlock", "sSoundFile", sWardTimedBlockSoundFile.c_str());
+    ini.SetDoubleValue("WardTimedBlock", "fSoundVolume", fWardTimedBlockSoundVolume);
+    ini.SetBoolValue("WardTimedBlock", "bCounterAttack", bWardTimedBlockCounterAttack);
+    ini.SetDoubleValue("WardTimedBlock", "fCounterWindowMs", fWardCounterWindowMs);
+    ini.SetDoubleValue("WardTimedBlock", "fCounterDamagePercent", fWardCounterDamagePercent);
+    ini.SetBoolValue("WardTimedBlock", "bCounterSpellHit", bWardCounterSpellHit);
+    ini.SetDoubleValue("WardTimedBlock", "fCounterSpellInFlightMs", fWardCounterSpellInFlightMs);
+    ini.SetBoolValue("WardTimedBlock", "bCounterSpellSound", bWardCounterSpellSound);
+    ini.SetValue("WardTimedBlock", "sCounterSpellSoundFile", sWardCounterSpellSoundFile.c_str());
+    ini.SetDoubleValue("WardTimedBlock", "fCounterSpellSoundVolume", fWardCounterSpellSoundVolume);
+    ini.SetDoubleValue("WardTimedBlock", "fCooldown", fWardTimedBlockCooldown);
+    ini.SetDoubleValue("WardTimedBlock", "fMeleeDetectionRange", fWardMeleeDetectionRange);
+    ini.SetBoolValue("WardTimedBlock", "bRequire2HForTwoHanders", bWardRequire2HForTwoHanders);
+    ini.SetBoolValue("WardTimedBlock", "bOmnidirectional", bWardOmnidirectional);
+    ini.SetBoolValue("WardTimedBlock", "bMagickaRestore", bWardTimedBlockMagickaRestore);
+    ini.SetDoubleValue("WardTimedBlock", "fMagickaRestorePercent", fWardMagickaRestorePercent);
+
+    // Window exclusion
+    ini.SetDoubleValue("General", "fWindowExclusionMs", fWindowExclusionMs);
 
     // Save debug
     ini.SetBoolValue("Log", "Debug", bDebugLogging);
