@@ -715,6 +715,13 @@ namespace Menu
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Cooldown before another timed dodge can trigger.\nPrevents spamming. Default: 3 seconds");
                 }
+
+                if (ImGui::SliderFloat("Damage Cooldown (sec)##dodge", &settings->fTimedDodgeDamageCooldown, 0.0f, 30.0f, "%.1f sec")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("After taking damage, timed dodge cannot trigger for this duration.\nSet to 0 to disable. Default: 5 seconds");
+                }
                 
                 if (ImGui::SliderFloat("Detection Range##dodge", &settings->fTimedDodgeDetectionRange, 100.0f, 600.0f, "%.0f units")) {
                     State::MarkChanged();
@@ -840,6 +847,47 @@ namespace Menu
                         }
                         if (ImGui::IsItemHovered()) {
                             ImGui::SetTooltip("Extra damage added to a counter-attack spell fired after a timed dodge.\n+50%% means a 20-damage spell deals 30.\n\nDefault: +50%%");
+                        }
+                        ImGui::Unindent();
+                    }
+
+                    ImGui::Spacing();
+
+                    if (ImGui::Checkbox("Ranged Counter Attack##dodge", &settings->bTimedDodgeCounterRanged)) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Allow firing a counter-attack arrow/bolt after a timed dodge.\nCancels the dodge animation and temporarily speeds up draw time.\n\nDefault: On");
+                    }
+
+                    if (settings->bTimedDodgeCounterRanged) {
+                        ImGui::Indent();
+                        if (ImGui::SliderFloat("Ranged Damage Bonus##dodge", &settings->fTimedDodgeCounterRangedDamagePercent, 10.0f, 500.0f, "+%.0f%%")) {
+                            State::MarkChanged();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Extra damage added to a counter-attack arrow/bolt after a timed dodge.\n+50%% means a 15-damage arrow deals 22.5.\n\nDefault: +50%%");
+                        }
+
+                        if (ImGui::SliderFloat("Ranged Window (ms)##dodge", &settings->fTimedDodgeCounterRangedWindowMs, 500.0f, 10000.0f, "%.0f ms")) {
+                            State::MarkChanged();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("How long you have to draw and fire the bow/crossbow after the dodge.\nThe bonus is consumed on the first arrow/bolt hit.\n\nDefault: 2500 ms");
+                        }
+
+                        if (ImGui::SliderFloat("Draw Speed Multiplier##dodge", &settings->fTimedDodgeCounterDrawSpeedMult, 1.0f, 10.0f, "%.1fx")) {
+                            State::MarkChanged();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Temporary draw speed multiplier for the counter shot.\n1.0x = normal speed, 2.0x = twice as fast.\nApplied once and removed after the arrow is fired.\n\nDefault: 2.0x");
+                        }
+
+                        if (ImGui::Checkbox("Counter Shot Sound##dodge", &settings->bTimedDodgeCounterRangedSound)) {
+                            State::MarkChanged();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Play a sound effect when the counter arrow/bolt hits an enemy.\n\nDefault: On");
                         }
                         ImGui::Unindent();
                     }
@@ -1215,11 +1263,44 @@ namespace Menu
                 }
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Enable on-screen notifications and log file output.\nLog: Documents/My Games/Skyrim Special Edition/SKSE/SimpleTimedBlockAddons.log");
+                ImGui::SetTooltip("Enable detailed log file output.\nLog: Documents/My Games/Skyrim Special Edition/SKSE/SimpleTimedBlockAddons.log\n\nOn-screen notifications are controlled separately below.");
             }
-            
-            // Show current cooldown state for debugging
+
             if (settings->bDebugLogging) {
+                ImGui::Spacing();
+                ImGui::Text("On-Screen Notifications:");
+                ImGui::Indent();
+
+                if (ImGui::Checkbox("Timed Block##dbgScreen", &settings->bDebugScreenTimedBlock)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Show timed block debug notifications on screen.\nCovers: parry success/failure, cooldown, stagger, stamina.");
+                }
+
+                if (ImGui::Checkbox("Counter Attack##dbgScreen", &settings->bDebugScreenCounterAttack)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Show counter attack debug notifications on screen.\nCovers: counter window, damage bonus, slow time, lunge,\nspell counter, ranged counter.");
+                }
+
+                if (ImGui::Checkbox("Ward Timed Block##dbgScreen", &settings->bDebugScreenWard)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Show ward timed block debug notifications on screen.\nCovers: ward detection, parry window, hit detection, cooldown.");
+                }
+
+                if (ImGui::Checkbox("Timed Dodge##dbgScreen", &settings->bDebugScreenDodge)) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Show timed dodge debug notifications on screen.\nCovers: dodge activation, slomo, i-frames.");
+                }
+
+                ImGui::Unindent();
+
                 ImGui::Separator();
                 ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Debug Status:");
                 ImGui::Text("  Cooldown Enabled: %s", settings->bEnableCooldown ? "YES" : "NO");

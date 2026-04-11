@@ -124,6 +124,7 @@ public:
     float fTimedDodgeSlomoDuration{ 4.0f };       // Slow-mo duration in seconds
     float fTimedDodgeSlomoSpeed{ 0.05f };         // Game speed during slomo (0.05 = 5%)
     float fTimedDodgeCooldown{ 3.0f };            // Cooldown in seconds
+    float fTimedDodgeDamageCooldown{ 5.0f };      // Cooldown after taking damage (seconds)
     float fTimedDodgeDetectionRange{ 300.0f };    // Range to detect attacking enemies (game units)
     float fTimedDodgeForgivenessMs{ 200.0f };    // Grace period for early dodges (milliseconds)
 
@@ -141,6 +142,11 @@ public:
     float fTimedDodgeCounterLungeMeleeStopDistance{ 128.0f }; // Stop distance for timed dodge lunge
     bool  bTimedDodgeCounterSpellHit{ true };                  // Allow spell counter attacks from timed dodge
     float fTimedDodgeCounterSpellDamagePercent{ 50.0f };       // Spell counter damage bonus % for timed dodge
+    bool  bTimedDodgeCounterRanged{ true };                    // Allow bow/crossbow counter from timed dodge
+    float fTimedDodgeCounterRangedDamagePercent{ 50.0f };      // Ranged counter damage bonus %
+    float fTimedDodgeCounterRangedWindowMs{ 2500.0f };         // Window for firing the arrow/bolt
+    float fTimedDodgeCounterDrawSpeedMult{ 2.0f };             // Temporary draw speed multiplier (1.0 = normal)
+    bool  bTimedDodgeCounterRangedSound{ true };               // Play sound on ranged counter hit
 
     // Timed Dodge Radial Blur
     bool  bTimedDodgeRadialBlur{ true };          // Radial blur during slomo
@@ -214,6 +220,10 @@ public:
 
     // Debug
     bool bDebugLogging{ false };
+    bool bDebugScreenTimedBlock{ false };
+    bool bDebugScreenCounterAttack{ false };
+    bool bDebugScreenWard{ false };
+    bool bDebugScreenDodge{ false };
 
 private:
     Settings() = default;

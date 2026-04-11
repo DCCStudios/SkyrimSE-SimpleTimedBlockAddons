@@ -107,6 +107,7 @@ void Settings::LoadSettings() {
     fTimedDodgeSlomoDuration = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fSlomoDuration", 4.0));
     fTimedDodgeSlomoSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fSlomoSpeed", 0.05));
     fTimedDodgeCooldown = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCooldown", 3.0));
+    fTimedDodgeDamageCooldown = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fDamageCooldown", 5.0));
     fTimedDodgeDetectionRange = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fDetectionRange", 300.0));
     fTimedDodgeForgivenessMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fForgivenessMs", 200.0));
     bTimedDodgeIframes = ini.GetBoolValue("TimedDodge", "bIframes", true);
@@ -120,6 +121,11 @@ void Settings::LoadSettings() {
     fTimedDodgeCounterLungeMeleeStopDistance = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeMeleeStop", 128.0));
     bTimedDodgeCounterSpellHit = ini.GetBoolValue("TimedDodge", "bCounterSpellHit", true);
     fTimedDodgeCounterSpellDamagePercent = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterSpellDamagePercent", 50.0));
+    bTimedDodgeCounterRanged = ini.GetBoolValue("TimedDodge", "bCounterRanged", true);
+    fTimedDodgeCounterRangedDamagePercent = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterRangedDamagePercent", 50.0));
+    fTimedDodgeCounterRangedWindowMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterRangedWindowMs", 2500.0));
+    fTimedDodgeCounterDrawSpeedMult = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterDrawSpeedMult", 2.0));
+    bTimedDodgeCounterRangedSound = ini.GetBoolValue("TimedDodge", "bCounterRangedSound", true);
     bTimedDodgeRadialBlur = ini.GetBoolValue("TimedDodge", "bRadialBlur", true);
     fTimedDodgeBlurStrength = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurStrength", 0.3));
     fTimedDodgeBlurBlendSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fBlurBlendSpeed", 5.0));
@@ -164,7 +170,11 @@ void Settings::LoadSettings() {
 
     // Debug logging
     bDebugLogging = ini.GetBoolValue("Log", "Debug", false);
-    
+    bDebugScreenTimedBlock = ini.GetBoolValue("Log", "DebugScreenTimedBlock", false);
+    bDebugScreenCounterAttack = ini.GetBoolValue("Log", "DebugScreenCounterAttack", false);
+    bDebugScreenWard = ini.GetBoolValue("Log", "DebugScreenWard", false);
+    bDebugScreenDodge = ini.GetBoolValue("Log", "DebugScreenDodge", false);
+
     if (bDebugLogging) {
         spdlog::set_level(spdlog::level::debug);
         spdlog::flush_on(spdlog::level::debug);  // Flush on debug too
@@ -183,6 +193,10 @@ void Settings::LoadSettings() {
     fTimedDodgeCounterLungeSpeed = std::clamp(fTimedDodgeCounterLungeSpeed, 0.1f, 50.0f);
     fTimedDodgeCounterLungeMeleeStopDistance = std::clamp(fTimedDodgeCounterLungeMeleeStopDistance, 32.0f, 512.0f);
     fTimedDodgeCounterSpellDamagePercent = std::clamp(fTimedDodgeCounterSpellDamagePercent, 10.0f, 500.0f);
+    fTimedDodgeCounterRangedDamagePercent = std::clamp(fTimedDodgeCounterRangedDamagePercent, 10.0f, 500.0f);
+    fTimedDodgeCounterRangedWindowMs = std::clamp(fTimedDodgeCounterRangedWindowMs, 500.0f, 10000.0f);
+    fTimedDodgeCounterDrawSpeedMult = std::clamp(fTimedDodgeCounterDrawSpeedMult, 1.0f, 10.0f);
+    fTimedDodgeDamageCooldown = std::clamp(fTimedDodgeDamageCooldown, 0.0f, 60.0f);
     iCounterLungeCurve = std::clamp(iCounterLungeCurve, 0, 5);
     iTimedDodgeCounterLungeCurve = std::clamp(iTimedDodgeCounterLungeCurve, 0, 5);
     fWardTimedBlockWindowMs = std::clamp(fWardTimedBlockWindowMs, 50.0f, 2000.0f);
@@ -333,6 +347,7 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fSlomoDuration", fTimedDodgeSlomoDuration);
     ini.SetDoubleValue("TimedDodge", "fSlomoSpeed", fTimedDodgeSlomoSpeed);
     ini.SetDoubleValue("TimedDodge", "fCooldown", fTimedDodgeCooldown);
+    ini.SetDoubleValue("TimedDodge", "fDamageCooldown", fTimedDodgeDamageCooldown);
     ini.SetDoubleValue("TimedDodge", "fDetectionRange", fTimedDodgeDetectionRange);
     ini.SetDoubleValue("TimedDodge", "fForgivenessMs", fTimedDodgeForgivenessMs);
     ini.SetBoolValue("TimedDodge", "bIframes", bTimedDodgeIframes);
@@ -346,6 +361,11 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fCounterLungeMeleeStop", fTimedDodgeCounterLungeMeleeStopDistance);
     ini.SetBoolValue("TimedDodge", "bCounterSpellHit", bTimedDodgeCounterSpellHit);
     ini.SetDoubleValue("TimedDodge", "fCounterSpellDamagePercent", fTimedDodgeCounterSpellDamagePercent);
+    ini.SetBoolValue("TimedDodge", "bCounterRanged", bTimedDodgeCounterRanged);
+    ini.SetDoubleValue("TimedDodge", "fCounterRangedDamagePercent", fTimedDodgeCounterRangedDamagePercent);
+    ini.SetDoubleValue("TimedDodge", "fCounterRangedWindowMs", fTimedDodgeCounterRangedWindowMs);
+    ini.SetDoubleValue("TimedDodge", "fCounterDrawSpeedMult", fTimedDodgeCounterDrawSpeedMult);
+    ini.SetBoolValue("TimedDodge", "bCounterRangedSound", bTimedDodgeCounterRangedSound);
     ini.SetBoolValue("TimedDodge", "bRadialBlur", bTimedDodgeRadialBlur);
     ini.SetDoubleValue("TimedDodge", "fBlurStrength", fTimedDodgeBlurStrength);
     ini.SetDoubleValue("TimedDodge", "fBlurBlendSpeed", fTimedDodgeBlurBlendSpeed);
@@ -389,7 +409,11 @@ void Settings::SaveSettings() {
 
     // Save debug
     ini.SetBoolValue("Log", "Debug", bDebugLogging);
-    
+    ini.SetBoolValue("Log", "DebugScreenTimedBlock", bDebugScreenTimedBlock);
+    ini.SetBoolValue("Log", "DebugScreenCounterAttack", bDebugScreenCounterAttack);
+    ini.SetBoolValue("Log", "DebugScreenWard", bDebugScreenWard);
+    ini.SetBoolValue("Log", "DebugScreenDodge", bDebugScreenDodge);
+
     // Preserve Forms section if it exists
     const char* perkModName = ini.GetValue("Forms", "PerkModName", "");
     const char* timedBlockPerk = ini.GetValue("Forms", "TimedBlockPerk", "");

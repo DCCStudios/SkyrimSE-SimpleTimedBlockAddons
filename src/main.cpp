@@ -73,10 +73,13 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             logger::info("Post load game - reloading settings");
             Settings::GetSingleton()->LoadSettings();
             
-            // Create counter damage forms (deferred from kDataLoaded so other
+            // Create runtime forms (deferred from kDataLoaded so other
             // plugins like SkyPatcher finish iterating spells first)
             if (!CounterAttackState::CreateCounterDamageForms()) {
                 logger::error("Failed to create counter-attack damage MGEF/spell");
+            }
+            if (!CounterAttackState::CreateDrawSpeedForms()) {
+                logger::error("Failed to create draw-speed boost MGEF/spell");
             }
             
             // Register animation event handler for counter slow time
@@ -90,6 +93,9 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             
             if (!CounterAttackState::CreateCounterDamageForms()) {
                 logger::error("Failed to create counter-attack damage MGEF/spell");
+            }
+            if (!CounterAttackState::CreateDrawSpeedForms()) {
+                logger::error("Failed to create draw-speed boost MGEF/spell");
             }
             
             // Register animation event handler for counter slow time

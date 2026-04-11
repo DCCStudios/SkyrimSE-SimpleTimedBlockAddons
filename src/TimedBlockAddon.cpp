@@ -19,6 +19,23 @@
 // Alias for Windows PlaySound
 #define WindowsPlaySound ::PlaySoundW
 
+enum class DebugCategory { kTimedBlock, kCounter, kWard, kDodge };
+
+static void DebugNotify(DebugCategory cat, const char* msg)
+{
+    auto* s = Settings::GetSingleton();
+    bool show = false;
+    switch (cat) {
+    case DebugCategory::kTimedBlock: show = s->bDebugScreenTimedBlock; break;
+    case DebugCategory::kCounter:    show = s->bDebugScreenCounterAttack; break;
+    case DebugCategory::kWard:       show = s->bDebugScreenWard; break;
+    case DebugCategory::kDodge:      show = s->bDebugScreenDodge; break;
+    }
+    if (show) {
+        RE::DebugNotification(msg);
+    }
+}
+
 namespace
 {
 	// vcpkg CommonLibSSE headers omit TESDataHandler::AddFormToDataHandler; engine offsets match CommonLibSSE src.
@@ -175,7 +192,7 @@ bool RollStaggerSuccess(RE::Actor* a_player)
             chance, roll, success ? "SUCCESS" : "FAILED");
         
         if (!success) {
-            RE::DebugNotification(fmt::format("[TB] Stagger failed ({:.0f}%)", chance).c_str());
+            DebugNotify(DebugCategory::kTimedBlock, fmt::format("[TB] Stagger failed ({:.0f}%)", chance).c_str());
         }
     }
     
@@ -416,7 +433,7 @@ void CooldownState::Update()
             StartCooldown("Block during cooldown - RESTARTED");
             
             if (settings->bDebugLogging) {
-                RE::DebugNotification("[TB Debug] Block during cooldown - RESTART");
+                DebugNotify(DebugCategory::kTimedBlock, "[TB Debug] Block during cooldown - RESTART");
             }
             
             // Dispel the parry window effect
@@ -426,7 +443,7 @@ void CooldownState::Update()
             // On cooldown but ignoring - allow the block to proceed
             if (settings->bDebugLogging) {
                 logger::info("[COOLDOWN] On cooldown but IGNORING (no enemies within {} units)", settings->fCooldownIgnoreDistance);
-                RE::DebugNotification("[TB Debug] Cooldown ignored (no enemies)");
+                DebugNotify(DebugCategory::kTimedBlock, "[TB Debug] Cooldown ignored (no enemies)");
             }
         }
     }
@@ -443,7 +460,7 @@ void CooldownState::StartCooldown(const char* reason)
     
     if (settings->bDebugLogging) {
         logger::info("[COOLDOWN] {} - Starting {}ms cooldown", reason, settings->fCooldownDurationMs);
-        RE::DebugNotification("[TB Debug] Cooldown STARTED");
+        DebugNotify(DebugCategory::kTimedBlock, "[TB Debug] Cooldown STARTED");
     }
 }
 
@@ -458,7 +475,7 @@ void CooldownState::OnTimedBlockTriggered()
     auto* settings = Settings::GetSingleton();
     if (settings->bDebugLogging) {
         logger::info("[COOLDOWN] TIMED BLOCK SUCCESS! Cooldown CLEARED for consecutive blocks");
-        RE::DebugNotification("[TB Debug] TIMED BLOCK SUCCESS!");
+        DebugNotify(DebugCategory::kTimedBlock, "[TB Debug] TIMED BLOCK SUCCESS!");
     }
 }
 
@@ -499,7 +516,7 @@ bool CooldownState::IsOnCooldown()
         
         if (settings->bDebugLogging) {
             logger::info("[COOLDOWN] Cooldown EXPIRED by timer");
-            RE::DebugNotification("[TB Debug] Cooldown EXPIRED");
+            DebugNotify(DebugCategory::kTimedBlock, "[TB Debug] Cooldown EXPIRED");
         }
         return false;
     }
@@ -838,6 +855,10 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
         TimedDodgeState::OnPlayerHit(defender);
         return Result::kContinue;
     }
+
+    // Player took a real hit — stamp the damage cooldown so they cannot immediately
+    // timed-dodge after getting hit (applies to both melee and projectile hits).
+    TimedDodgeState::OnPlayerDamaged();
     
     // Skip projectiles for timed block processing (ward timed block is melee-only)
     if (a_event->projectile) {
@@ -883,7 +904,7 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
                     } else {
                         logger::info("[WARD TB] Melee hit on player — no ward active effect found (kw={})",
                             WardTimedBlockState::wardKeyword ? "ok" : "null");
-                        RE::DebugNotification("[WARD] Hit — no ward detected");
+                        DebugNotify(DebugCategory::kWard, "[WARD] Hit — no ward detected");
                     }
                 }
             }
@@ -908,19 +929,19 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
                     if (distSq > kWardMeleeRangeSq) {
                         if (wardSettings->bDebugLogging) {
                             logger::info("[WARD TB] Hit rejected — attacker too far ({:.0f} units)", std::sqrt(distSq));
-                            RE::DebugNotification("[WARD] Hit — attacker out of melee range");
+                            DebugNotify(DebugCategory::kWard, "[WARD] Hit — attacker out of melee range");
                         }
                         // Fall through to normal hit processing
                     } else {
                         if (wardSettings->bDebugLogging) {
-                            RE::DebugNotification(fmt::format("[WARD] Hit IN parry window ({:.0f}u)", std::sqrt(distSq)).c_str());
+                            DebugNotify(DebugCategory::kWard, fmt::format("[WARD] Hit IN parry window ({:.0f}u)", std::sqrt(distSq)).c_str());
                         }
                         WardTimedBlockState::OnMeleeHit(defender, wardAttacker);
                         return Result::kContinue;
                     }
                 }
             } else if (wardSettings->bDebugLogging) {
-                RE::DebugNotification("[WARD] Hit — NOT in parry window");
+                DebugNotify(DebugCategory::kWard, "[WARD] Hit — NOT in parry window");
             }
         }
     }
@@ -959,7 +980,7 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
         if (!ignoreCooldownDueToDistance && CooldownState::IsOnCooldown()) {
             logger::info("[HITEVENT] Timed block HIT detected but on cooldown - SKIPPING ALL addon effects");
             if (settings->bDebugLogging) {
-                RE::DebugNotification("[TB Debug] WOULD HAVE been timed block (cooldown)");
+                DebugNotify(DebugCategory::kTimedBlock, "[TB Debug] WOULD HAVE been timed block (cooldown)");
             }
             return Result::kContinue;  // EXIT EARLY - no effects!
         }
@@ -1039,11 +1060,11 @@ void TimedBlockAddon::ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* att
             if (isPowerAttack) {
                 logger::info("[TIMED BLOCK] Blocked POWER ATTACK from '{}' (detected via: {}), stagger: {}", 
                     attacker->GetName(), powerAttackReason, staggerMagnitude);
-                RE::DebugNotification(fmt::format("[TB] POWER ATTACK blocked ({})", powerAttackReason).c_str());
+                DebugNotify(DebugCategory::kTimedBlock, fmt::format("[TB] POWER ATTACK blocked ({})", powerAttackReason).c_str());
             } else {
                 logger::info("[TIMED BLOCK] Blocked NORMAL ATTACK from '{}', stagger: {}", 
                     attacker->GetName(), staggerMagnitude);
-                RE::DebugNotification("[TB] Normal attack blocked");
+                DebugNotify(DebugCategory::kTimedBlock, "[TB] Normal attack blocked");
             }
         } else {
             logger::debug("Triggering stagger on attacker with magnitude: {}", staggerMagnitude);
@@ -1080,7 +1101,7 @@ void TimedBlockAddon::ApplyTimedBlockEffects(RE::Actor* defender, RE::Actor* att
                 if (settings->bDebugLogging) {
                     logger::info("[TIMED BLOCK] Restored {:.1f} stamina ({:.0f}% of max {:.1f})", 
                         actualRestore, settings->fStaminaRestorePercent, maxStamina);
-                    RE::DebugNotification(fmt::format("[TB] +{:.0f} Stamina", actualRestore).c_str());
+                    DebugNotify(DebugCategory::kTimedBlock, fmt::format("[TB] +{:.0f} Stamina", actualRestore).c_str());
                 }
             }
         }
@@ -1572,6 +1593,7 @@ void CounterAttackState::StartWindow(RE::Actor* attacker)
     fromTimedDodge = false;
     fromWardTimedBlock = false;
     spellFiredDuringWindow = false;
+    rangedCounterActive = false;
     trackedSpellProjectile = {};
     projectileScanRetries = 0;
     windowEndTime = std::chrono::steady_clock::now() + 
@@ -1589,7 +1611,7 @@ void CounterAttackState::StartWindow(RE::Actor* attacker)
     
     if (settings->bDebugLogging) {
         logger::info("[COUNTER] Counter attack window OPENED for {}ms", settings->fCounterAttackWindow * 1000.0f);
-        RE::DebugNotification("[TB] Counter window open");
+        DebugNotify(DebugCategory::kCounter, "[TB] Counter window open");
     }
 }
 
@@ -1604,6 +1626,7 @@ void CounterAttackState::StartWardWindow(RE::Actor* attacker)
     fromTimedDodge = false;
     fromWardTimedBlock = true;
     spellFiredDuringWindow = false;
+    rangedCounterActive = false;
     trackedSpellProjectile = {};
     projectileScanRetries = 0;
     windowEndTime = std::chrono::steady_clock::now() +
@@ -1662,7 +1685,14 @@ void CounterAttackState::Update()
     // the Manager briefly with kDestroyed set; we must not latch it at that point.
     constexpr std::uint32_t kProjDestroyed = (1u << 25);
 
-    if ((fromWardTimedBlock || (fromTimedDodge && spellFiredDuringWindow)) && damageBonusActive && !trackedSpellProjectile) {
+    // --- Spell projectile scan (not used for ranged/arrow counters) ---
+    // Arrows and bolts are NOT destroyed after firing — they persist in the world
+    // and can be picked up.  Tracking them via Projectile::Manager is unreliable.
+    // Ranged counter hits are detected purely via TESHitEvent in the hit handler.
+    const bool wantSpellProjectileScan =
+        (fromWardTimedBlock || (fromTimedDodge && spellFiredDuringWindow));
+
+    if (wantSpellProjectileScan && damageBonusActive && !trackedSpellProjectile) {
         auto* projMgr = RE::Projectile::Manager::GetSingleton();
         if (projMgr) {
             auto scanArray = [&](RE::BSTArray<RE::ProjectileHandle>& arr) {
@@ -1670,13 +1700,13 @@ void CounterAttackState::Update()
                     auto projPtr = arr[i].get();
                     if (!projPtr) continue;
                     auto& rd = projPtr->GetProjectileRuntimeData();
-                    if ((rd.flags & kProjDestroyed) != 0) continue;  // already exploded
+                    if ((rd.flags & kProjDestroyed) != 0) continue;
                     auto shooterREFR = rd.shooter.get();
-                    if (shooterREFR && shooterREFR.get() && shooterREFR.get()->IsPlayerRef() && rd.spell) {
+                    if (!shooterREFR || !shooterREFR.get() || !shooterREFR.get()->IsPlayerRef()) continue;
+
+                    if (rd.spell) {
                         trackedSpellProjectile = arr[i];
                         if (!spellFiredDuringWindow) {
-                            // Player was already charging when the parry landed.
-                            // Close the melee input window and extend the bonus deadline.
                             spellFiredDuringWindow = true;
                             inWindow = false;
                             damageBonusEndTime = now + std::chrono::milliseconds(
@@ -1693,15 +1723,12 @@ void CounterAttackState::Update()
         }
     }
 
-    // --- Projectile destruction detection ---
-    // When the tracked projectile gains kDestroyed, it has hit something (wall,
-    // ground, or enemy).  We do NOT remove the bonus immediately because AoE spells
-    // (Fireball, etc.) fire a separate TESHitEvent with projectile==0 a frame AFTER
-    // the projectile is flagged destroyed.  Instead we:
-    //   1) Clear the handle so the non-projectile path in the hit handler is unblocked.
-    //   2) Shrink the remaining deadline to 500ms — enough time for the AoE event to
-    //      arrive, but short enough that a real miss cleans up quickly.
-    if (trackedSpellProjectile && damageBonusActive && (fromWardTimedBlock || (fromTimedDodge && spellFiredDuringWindow))) {
+    // --- Spell projectile destruction detection ---
+    // When a tracked spell projectile (Fireball etc.) gains kDestroyed it has hit
+    // something.  Clear the handle and give a 500ms grace window for the AoE event.
+    // NOTE: this block intentionally does NOT run for ranged counters — arrows and
+    // bolts are physical objects that persist after firing (see comment above).
+    if (trackedSpellProjectile && damageBonusActive && wantSpellProjectileScan) {
         auto projPtr = trackedSpellProjectile.get();
         bool destroyed = !projPtr;
         if (!destroyed) {
@@ -1709,39 +1736,47 @@ void CounterAttackState::Update()
             destroyed = (rd.flags & kProjDestroyed) != 0;
         }
         if (destroyed) {
-            logger::info("[COUNTER DAMAGE] Tracked projectile destroyed — handle cleared, 500ms AoE grace window");
+            logger::info("[COUNTER DAMAGE] Tracked spell projectile destroyed — handle cleared, 500ms AoE grace window");
             spdlog::default_logger()->flush();
-            trackedSpellProjectile = {};  // unblock the projectile==0 hit path
-            const auto aoeDeadline = now + std::chrono::milliseconds(500);
-            if (damageBonusEndTime > aoeDeadline) {
-                damageBonusEndTime = aoeDeadline;
+            trackedSpellProjectile = {};
+            const auto graceDeadline = now + std::chrono::milliseconds(500);
+            if (damageBonusEndTime > graceDeadline) {
+                damageBonusEndTime = graceDeadline;
             }
         }
     }
 
-    // --- Damage bonus timeout (fallback / concentration spells) ---
+    // --- Damage bonus timeout (fallback / concentration spells / ranged) ---
     if (damageBonusActive && now >= damageBonusEndTime) {
-        const float timeoutLogged = fromTimedDodge  ? settings->fTimedDodgeCounterDamageTimeout
-                                 : fromWardTimedBlock ? (spellFiredDuringWindow
-                                     ? settings->fWardCounterSpellInFlightMs / 1000.0f
-                                     : settings->fWardCounterWindowMs / 1000.0f)
-                                 : settings->fCounterDamageBonusTimeout;
-        logger::info("[COUNTER DAMAGE] Damage bonus timed out ({:.1f}s, spellInFlight={}, tracked={})",
-            timeoutLogged, spellFiredDuringWindow, static_cast<bool>(trackedSpellProjectile));
+        const float timeoutLogged = fromTimedDodge
+            ? (rangedCounterActive ? (settings->fTimedDodgeCounterRangedWindowMs / 1000.0f)
+                                   : settings->fTimedDodgeCounterDamageTimeout)
+            : fromWardTimedBlock ? (spellFiredDuringWindow
+                ? settings->fWardCounterSpellInFlightMs / 1000.0f
+                : settings->fWardCounterWindowMs / 1000.0f)
+            : settings->fCounterDamageBonusTimeout;
+        logger::info("[COUNTER DAMAGE] Damage bonus timed out ({:.1f}s, spellInFlight={}, ranged={}, tracked={})",
+            timeoutLogged, spellFiredDuringWindow, rangedCounterActive, static_cast<bool>(trackedSpellProjectile));
         spdlog::default_logger()->flush();
 
         if (settings->bDebugLogging) {
-            RE::DebugNotification(spellFiredDuringWindow ? "[TB] Counter spell timed out"
-                                                        : "[TB] Counter damage expired");
+            if (rangedCounterActive) {
+                DebugNotify(DebugCategory::kDodge, "[TD] Ranged counter timed out");
+            } else if (spellFiredDuringWindow) {
+                DebugNotify(DebugCategory::kCounter, "[TB] Counter spell timed out");
+            } else {
+                DebugNotify(DebugCategory::kCounter, "[TB] Counter damage expired");
+            }
         }
         const bool wasWard = fromWardTimedBlock;
         const bool wasDodgeSpell = fromTimedDodge && spellFiredDuringWindow;
+        const bool wasDodgeRanged = fromTimedDodge && rangedCounterActive;
         RemoveDamageBonus();
         if (wasWard) {
             fromWardTimedBlock = false;
             inWindow = false;
         }
-        if (wasDodgeSpell) {
+        if (wasDodgeSpell || wasDodgeRanged) {
             fromTimedDodge = false;
             inWindow = false;
         }
@@ -1780,7 +1815,66 @@ void CounterAttackState::OnSpellFired()
     if (settings->bDebugLogging) {
         logger::info("[COUNTER DAMAGE] Spell fired — melee window closed, bonus extended {:.0f}ms",
             settings->fWardCounterSpellInFlightMs);
-        RE::DebugNotification("[TB] Counter spell in flight...");
+        DebugNotify(DebugCategory::kCounter, "[TB] Counter spell in flight...");
+    }
+}
+
+void CounterAttackState::OnRangedCounterInput()
+{
+    if (!inWindow || !fromTimedDodge) return;
+    if (rangedCounterActive) return;
+
+    auto* settings = Settings::GetSingleton();
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+
+    // Apply the draw speed buff before anything else so the game sees the new
+    // kWeaponSpeedMult value before the dodge animation is cancelled and the
+    // bow draw begins.
+    rangedCounterActive = true;
+    ApplyDrawSpeedBuff();
+
+    // End dodge slomo so the player can aim freely
+    if (TimedDodgeState::IsSlomoActive()) {
+        TimedDodgeState::End();
+    }
+    player->NotifyAnimationGraph("TKDodgeStop");
+
+    ApplyDamageBonus();
+
+    // Close the general counter input window; set a ranged-specific deadline.
+    inWindow = false;
+    damageBonusEndTime = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(static_cast<long long>(settings->fTimedDodgeCounterRangedWindowMs));
+
+    // Trigger the bow/crossbow draw animation on the next frame (same pattern as
+    // melee counter — the graph needs one tick after TKDodgeStop to leave the
+    // dodge state before an attack action can begin).
+    RE::ActorHandle playerHandle = player->GetHandle();
+    SKSE::GetTaskInterface()->AddTask([playerHandle]() {
+        auto playerPtr = playerHandle.get();
+        if (auto* p = playerPtr.get()) {
+            using PerformAction_t = bool(RE::TESActionData*);
+            REL::Relocation<PerformAction_t> performAction{ RELOCATION_ID(40551, 41557) };
+
+            auto* data = RE::TESActionData::Create();
+            if (data) {
+                data->source = RE::NiPointer<RE::TESObjectREFR>(p);
+                data->action = RE::TESForm::LookupByID<RE::BGSAction>(0x13005);
+                if (data->action) {
+                    performAction(data);
+                }
+                delete data;
+            }
+        }
+    });
+
+    logger::info("[RANGED COUNTER] Initiated — draw speed buff active, {:.0f}ms window, scan delayed 300ms",
+        settings->fTimedDodgeCounterRangedWindowMs);
+    spdlog::default_logger()->flush();
+
+    if (settings->bDebugLogging) {
+        DebugNotify(DebugCategory::kDodge, "[TD] Ranged counter!");
     }
 }
 
@@ -1886,7 +1980,7 @@ void CounterAttackState::OnAttackInput()
         
         if (settings->bDebugLogging) {
             logger::info("[COUNTER] Timed dodge counter attack executed");
-            RE::DebugNotification("[TD] Counter attack!");
+            DebugNotify(DebugCategory::kDodge, "[TD] Counter attack!");
         }
         
         inWindow = false;
@@ -1937,7 +2031,7 @@ void CounterAttackState::OnAttackInput()
     
     if (settings->bDebugLogging) {
         logger::info("[COUNTER] Attack input during counter window - timed block counter");
-        RE::DebugNotification("[TB] Counter attack!");
+        DebugNotify(DebugCategory::kCounter, "[TB] Counter attack!");
     }
     
     inWindow = false;
@@ -2033,6 +2127,127 @@ bool CounterAttackState::CreateCounterDamageForms()
     return counterMGEF != nullptr && counterSpell != nullptr;
 }
 
+bool CounterAttackState::CreateDrawSpeedForms()
+{
+    if (drawSpeedMGEF && drawSpeedSpell) {
+        return true;
+    }
+
+    auto* mgefFactory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::EffectSetting>();
+    auto* spelFactory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::SpellItem>();
+    if (!mgefFactory || !spelFactory) {
+        logger::error("[RANGED COUNTER] Form factory unavailable");
+        return false;
+    }
+
+    auto* dh = RE::TESDataHandler::GetSingleton();
+
+    if (!drawSpeedMGEF) {
+        auto* mgefForm = mgefFactory->Create();
+        drawSpeedMGEF = mgefForm ? mgefForm->As<RE::EffectSetting>() : nullptr;
+        if (!drawSpeedMGEF) {
+            logger::error("[RANGED COUNTER] Failed to allocate EffectSetting");
+            return false;
+        }
+
+        drawSpeedMGEF->fullName = "STBA Draw Speed Boost";
+
+        using Flag = RE::EffectSetting::EffectSettingData::Flag;
+        auto& md = drawSpeedMGEF->data;
+        md.flags.set(Flag::kRecover);
+        md.flags.set(Flag::kNoDuration);
+        md.flags.set(Flag::kNoArea);
+        md.flags.set(Flag::kHideInUI);
+        md.baseCost = 0.0f;
+        md.archetype = RE::EffectArchetypes::ArchetypeID::kPeakValueModifier;
+        md.primaryAV = RE::ActorValue::kWeaponSpeedMult;
+        md.associatedSkill = RE::ActorValue::kNone;
+        md.resistVariable = RE::ActorValue::kNone;
+        md.castingType = RE::MagicSystem::CastingType::kFireAndForget;
+        md.delivery = RE::MagicSystem::Delivery::kSelf;
+
+        if (dh && !AddFormToDataHandler(dh, drawSpeedMGEF)) {
+            logger::warn("[RANGED COUNTER] AddFormToDataHandler failed for MGEF");
+        }
+        logger::info("[RANGED COUNTER] Draw speed MGEF created (PVM on WeaponSpeedMult)");
+    }
+
+    if (!drawSpeedSpell) {
+        auto* spelForm = spelFactory->Create();
+        drawSpeedSpell = spelForm ? spelForm->As<RE::SpellItem>() : nullptr;
+        if (!drawSpeedSpell) {
+            logger::error("[RANGED COUNTER] Failed to allocate SpellItem");
+            return false;
+        }
+
+        drawSpeedSpell->fullName = "STBA Draw Speed Boost";
+        drawSpeedSpell->data.spellType = RE::MagicSystem::SpellType::kAbility;
+        drawSpeedSpell->data.castingType = RE::MagicSystem::CastingType::kFireAndForget;
+        drawSpeedSpell->data.delivery = RE::MagicSystem::Delivery::kSelf;
+        drawSpeedSpell->data.chargeTime = 0.0f;
+        drawSpeedSpell->data.castDuration = 0.0f;
+        drawSpeedSpell->data.range = 0.0f;
+        drawSpeedSpell->data.costOverride = 0;
+        drawSpeedSpell->data.flags.set(RE::SpellItem::SpellFlag::kCostOverride);
+
+        auto* effect = new RE::Effect();
+        effect->baseEffect = drawSpeedMGEF;
+        effect->effectItem.magnitude = 1.0f;
+        effect->effectItem.area = 0;
+        effect->effectItem.duration = 0;
+        drawSpeedSpell->effects.push_back(effect);
+
+        if (dh && !AddFormToDataHandler(dh, drawSpeedSpell)) {
+            logger::warn("[RANGED COUNTER] AddFormToDataHandler failed for SPEL");
+        }
+        logger::info("[RANGED COUNTER] Draw speed SPEL created");
+    }
+
+    return drawSpeedMGEF != nullptr && drawSpeedSpell != nullptr;
+}
+
+void CounterAttackState::ApplyDrawSpeedBuff()
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* settings = Settings::GetSingleton();
+    if (!player || !drawSpeedSpell) return;
+
+    float magnitude = settings->fTimedDodgeCounterDrawSpeedMult - 1.0f;
+    if (magnitude <= 0.0f) return;
+
+    if (!drawSpeedSpell->effects.empty() && drawSpeedSpell->effects[0]) {
+        drawSpeedSpell->effects[0]->effectItem.magnitude = magnitude;
+    }
+
+    auto* caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
+    if (caster) {
+        caster->CastSpellImmediate(drawSpeedSpell, true, player, 1.0f, false, 0.0f, player);
+    }
+
+    logger::info("[RANGED COUNTER] Draw speed buff applied (+{:.0f}% weapon speed)", magnitude * 100.0f);
+}
+
+void CounterAttackState::RemoveDrawSpeedBuff()
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !drawSpeedMGEF) return;
+
+    auto* magicTarget = player->AsMagicTarget();
+    if (!magicTarget) return;
+
+    auto* effects = magicTarget->GetActiveEffectList();
+    if (!effects) return;
+
+    for (auto* ae : *effects) {
+        if (!ae) continue;
+        if (ae->GetBaseObject() == drawSpeedMGEF) {
+            ae->Dispel(true);
+            logger::info("[RANGED COUNTER] Draw speed buff dispelled");
+            return;
+        }
+    }
+}
+
 void CounterAttackState::ApplyDamageBonus(bool isSpellCounter)
 {
     auto* settings = Settings::GetSingleton();
@@ -2043,17 +2258,20 @@ void CounterAttackState::ApplyDamageBonus(bool isSpellCounter)
     }
 
     float damagePercent = fromTimedDodge
-        ? (isSpellCounter ? settings->fTimedDodgeCounterSpellDamagePercent
-                          : settings->fTimedDodgeCounterDamagePercent)
+        ? (isSpellCounter     ? settings->fTimedDodgeCounterSpellDamagePercent
+         : rangedCounterActive ? settings->fTimedDodgeCounterRangedDamagePercent
+         :                       settings->fTimedDodgeCounterDamagePercent)
         : fromWardTimedBlock ? settings->fWardCounterDamagePercent
         : settings->fCounterDamageBonusPercent;
 
     appliedDamageBonus = damagePercent;
     damageBonusActive = true;
 
-    float timeout = fromTimedDodge  ? settings->fTimedDodgeCounterDamageTimeout
-                  : fromWardTimedBlock ? (settings->fWardCounterWindowMs / 1000.0f)
-                  : settings->fCounterDamageBonusTimeout;
+    float timeout = fromTimedDodge
+        ? (rangedCounterActive ? (settings->fTimedDodgeCounterRangedWindowMs / 1000.0f)
+                               : settings->fTimedDodgeCounterDamageTimeout)
+        : fromWardTimedBlock ? (settings->fWardCounterWindowMs / 1000.0f)
+        : settings->fCounterDamageBonusTimeout;
     auto timeoutMs = static_cast<int>(timeout * 1000.0f);
     damageBonusEndTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 
@@ -2069,7 +2287,7 @@ void CounterAttackState::ApplyDamageBonus(bool isSpellCounter)
     spdlog::default_logger()->flush();
 
     if (settings->bDebugLogging) {
-        RE::DebugNotification(fmt::format("[TB] +{:.0f}% damage ready!", damagePercent).c_str());
+        DebugNotify(DebugCategory::kCounter, fmt::format("[TB] +{:.0f}% damage ready!", damagePercent).c_str());
     }
 }
 
@@ -2085,6 +2303,11 @@ void CounterAttackState::RemoveDamageBonus()
     spellFiredDuringWindow = false;
     trackedSpellProjectile = {};
     projectileScanRetries = 0;
+
+    if (rangedCounterActive) {
+        RemoveDrawSpeedBuff();
+        rangedCounterActive = false;
+    }
 
     logger::info("[COUNTER DAMAGE] Bonus cleared (was +{:.0f}%)", was);
     spdlog::default_logger()->flush();
@@ -2264,6 +2487,19 @@ RE::BSEventNotifyControl CounterAttackInputHandler::ProcessEvent(
             }
 
             if (!attackingHandHasSpell) {
+                // Check for ranged counter (bow/crossbow) from timed dodge
+                if (CounterAttackState::inWindow && CounterAttackState::fromTimedDodge &&
+                    settings->bTimedDodgeCounterRanged && player) {
+                    auto* eq = player->GetEquippedObject(false);
+                    if (eq && eq->IsWeapon()) {
+                        auto* weap = eq->As<RE::TESObjectWEAP>();
+                        if (weap && (weap->GetWeaponType() == RE::WEAPON_TYPE::kBow ||
+                                     weap->GetWeaponType() == RE::WEAPON_TYPE::kCrossbow)) {
+                            CounterAttackState::OnRangedCounterInput();
+                            break;
+                        }
+                    }
+                }
                 CounterAttackState::OnAttackInput();
             } else if (CounterAttackState::inWindow && CounterAttackState::fromTimedDodge &&
                        settings->bTimedDodgeCounterSpellHit) {
@@ -2278,7 +2514,7 @@ RE::BSEventNotifyControl CounterAttackInputHandler::ProcessEvent(
 
                 if (settings->bDebugLogging) {
                     logger::info("[COUNTER] Timed dodge spell counter initiated");
-                    RE::DebugNotification("[TD] Counter spell!");
+                    DebugNotify(DebugCategory::kDodge, "[TD] Counter spell!");
                 }
             }
             break;
@@ -2645,7 +2881,7 @@ void CounterSlowTimeState::Start()
     if (settings->bDebugLogging) {
         logger::info("[COUNTER SLOWTIME] Started at {}% - waiting for '{}' event", 
             settings->fCounterSlowTimeScale * 100.0f, settings->sCounterSlowEndEvent);
-        RE::DebugNotification("[TB] Slow time!");
+        DebugNotify(DebugCategory::kCounter, "[TB] Slow time!");
     }
 }
 
@@ -3005,7 +3241,7 @@ void WardTimedBlockState::RegisterPrecision()
 				// dot >= 0 → attacker within the front 180° → ward covers it
 				if (playerFwd.Dot(toAttacker) < 0.0f) {
 					if (settings->bDebugLogging) {
-						RE::DebugNotification("[WARD] Hit from behind — not parried (non-omni)");
+						DebugNotify(DebugCategory::kWard, "[WARD] Hit from behind — not parried (non-omni)");
 					}
 					return ret;
 				}
@@ -3055,7 +3291,7 @@ void WardTimedBlockState::OnWardActivated(bool dualCast)
 			StartCooldown();
 			if (settings->bDebugLogging) {
 				logger::info("[WARD TB] Ward cast during cooldown — cooldown RESTARTED");
-				RE::DebugNotification("[WARD] Cooldown — blocked");
+				DebugNotify(DebugCategory::kWard, "[WARD] Cooldown — blocked");
 			}
 			return;
 		}
@@ -3090,7 +3326,7 @@ void WardTimedBlockState::OnWardActivated(bool dualCast)
 	if (settings->bDebugLogging) {
 		logger::info("[WARD TB] Window opened (dualCast={}, {:.0f}ms, precision={})",
 			dualCast, settings->fWardTimedBlockWindowMs, g_precisionAvailable);
-		RE::DebugNotification(dualCast ? "[WARD] 2H ward active — parry open" : "[WARD] Ward active — parry open");
+		DebugNotify(DebugCategory::kWard, dualCast ? "[WARD] 2H ward active — parry open" : "[WARD] Ward active — parry open");
 	}
 }
 
@@ -3113,7 +3349,7 @@ bool WardTimedBlockState::OnMeleeHit(RE::Actor* defender, RE::Actor* attacker)
 					inWindow = false;
 					logger::info("[WARD TB] 2H weapon attack — 1H ward insufficient (bWardRequire2HForTwoHanders=true)");
 					if (settings->bDebugLogging) {
-						RE::DebugNotification("[WARD TB] Need dual-cast ward for this attack");
+						DebugNotify(DebugCategory::kWard, "[WARD TB] Need dual-cast ward for this attack");
 					}
 					return false;  // Rejected — hit should proceed normally
 				}
@@ -3327,6 +3563,7 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
     auto* settings = Settings::GetSingleton();
 
     bool isSpellCounter = false;
+    bool isRangedCounter = false;
     bool isProjectileHit = false;
 
     const bool spellCounterAllowed =
@@ -3334,16 +3571,30 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
         (CounterAttackState::fromTimedDodge && settings->bTimedDodgeCounterSpellHit &&
          CounterAttackState::spellFiredDuringWindow);
 
+    const bool rangedCounterAllowed =
+        CounterAttackState::rangedCounterActive && CounterAttackState::damageBonusActive;
+
     if (a_event->projectile) {
-        if (!spellCounterAllowed) {
-            return RE::BSEventNotifyControl::kContinue;
+        // Ranged counter: arrow/bolt from player (non-spell source)
+        if (rangedCounterAllowed) {
+            auto* srcForm = a_event->source != 0 ? RE::TESForm::LookupByID(a_event->source) : nullptr;
+            if (!srcForm || !srcForm->IsMagicItem()) {
+                isRangedCounter = true;
+                isProjectileHit = true;
+            }
         }
-        bool sp = false;
-        if (!IsWardSpellCounterHit(a_event, sp) || !sp) {
-            return RE::BSEventNotifyControl::kContinue;
+
+        if (!isRangedCounter) {
+            if (!spellCounterAllowed) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            bool sp = false;
+            if (!IsWardSpellCounterHit(a_event, sp) || !sp) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            isSpellCounter = true;
+            isProjectileHit = true;
         }
-        isSpellCounter = true;
-        isProjectileHit = true;
     } else if (spellCounterAllowed) {
         // Non-projectile hit (projectile==0).  Two possibilities:
         //   A) Concentration/beam spell — these NEVER produce projectiles, so
@@ -3383,7 +3634,7 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
     // counter, never fall through to the melee path — a spell hit should not
     // consume the melee counter bonus. (Projectile spell hits that aren't ward
     // counters already return early above; this guards the projectile==0 case.)
-    if (!isSpellCounter && a_event->source != 0) {
+    if (!isSpellCounter && !isRangedCounter && a_event->source != 0) {
         auto* hitSrc = RE::TESForm::LookupByID(a_event->source);
         if (hitSrc && hitSrc->IsMagicItem()) {
             return RE::BSEventNotifyControl::kContinue;
@@ -3394,7 +3645,31 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
     const bool fromDodge = CounterAttackState::fromTimedDodge;
 
     float baseDamage = 0.0f;
-    if (isSpellCounter) {
+    if (isRangedCounter) {
+        auto* weapon = player->GetEquippedObject(false);
+        if (weapon && weapon->IsWeapon()) {
+            baseDamage = static_cast<float>(weapon->As<RE::TESObjectWEAP>()->GetAttackDamage());
+        }
+        // Add ammo damage from the projectile's runtime data
+        if (a_event->projectile != 0) {
+            RE::NiPointer<RE::TESObjectREFR> refr =
+                RE::TESObjectREFR::LookupByHandle(static_cast<RE::RefHandle>(a_event->projectile));
+            if (refr) {
+                if (auto* proj = refr->As<RE::Projectile>()) {
+                    auto& rd = proj->GetProjectileRuntimeData();
+                    if (rd.ammoSource) {
+                        auto& projData = rd.ammoSource->data;
+                        baseDamage += static_cast<float>(projData.damage);
+                    }
+                }
+            }
+        }
+        if (baseDamage <= 0.0f) {
+            baseDamage = 15.0f;
+        }
+        float damageMult = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult);
+        baseDamage *= damageMult;
+    } else if (isSpellCounter) {
         if (a_event->source != 0) {
             auto* src = RE::TESForm::LookupByID(a_event->source);
             if (src && src->IsMagicItem()) {
@@ -3459,7 +3734,7 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
     CounterAttackState::RemoveDamageBonus();
 
     if (bonusDamage > 0.0f) {
-        if ((fromWard || fromDodge) && isSpellCounter && settings->bEnableCounterSlowTime) {
+        if ((fromWard || fromDodge) && (isSpellCounter || isRangedCounter) && settings->bEnableCounterSlowTime) {
             CounterSlowTimeState::End();
             CounterSlowTimeState::Start();
         }
@@ -3493,20 +3768,21 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
                 -bonusDamage);
         }
 
-        logger::info("[COUNTER DAMAGE] Hit '{}': base ~{:.1f}, +{:.0f}% = +{:.1f} bonus damage (spell={}, wardSpell={})",
+        const char* hitType = isRangedCounter ? "ranged" : (isSpellCounter ? "spell" : "melee");
+        logger::info("[COUNTER DAMAGE] Hit '{}': base ~{:.1f}, +{:.0f}% = +{:.1f} bonus damage (type={}, cast={})",
             target->GetName(), baseDamage, bonusPercent * 100.0f,
-            bonusDamage, castOk ? "yes" : "fallback", isSpellCounter);
+            bonusDamage, hitType, castOk ? "yes" : "fallback");
         spdlog::default_logger()->flush();
 
         if (settings->bDebugLogging) {
-            RE::DebugNotification(fmt::format("[TB] Counter! +{:.0f} damage", bonusDamage).c_str());
+            DebugNotify(DebugCategory::kCounter, fmt::format("[TB] Counter! +{:.0f} damage", bonusDamage).c_str());
         }
 
-        if (isSpellCounter && settings->bWardCounterSpellSound) {
-            // Ward spell counter hit (projectile or direct/concentration) — play spell sound.
+        if (isRangedCounter && settings->bTimedDodgeCounterRangedSound) {
+            PlayCounterStrikeSound();
+        } else if (isSpellCounter && settings->bWardCounterSpellSound) {
             WardTimedBlockState::PlayWardCounterSpellSound();
-        } else if (!isSpellCounter) {
-            // Melee counter hit — play melee sound.
+        } else if (!isSpellCounter && !isRangedCounter) {
             PlayCounterStrikeSound();
         }
     }
@@ -3514,6 +3790,12 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
     if (fromWard) {
         CounterAttackState::inWindow = false;
         CounterAttackState::fromWardTimedBlock = false;
+    }
+
+    if (isRangedCounter) {
+        CounterAttackState::RemoveDrawSpeedBuff();
+        CounterAttackState::rangedCounterActive = false;
+        CounterAttackState::fromTimedDodge = false;
     }
     
     return RE::BSEventNotifyControl::kContinue;
@@ -3560,7 +3842,7 @@ void TimedDodgeState::OnAnimEvent(const char* eventName)
     if (slomoActive) {
         if (settings->bDebugLogging) {
             logger::info("[TIMED DODGE] Cancelling active timed dodge via another dodge");
-            RE::DebugNotification("[TD] Dodge cancelled slomo");
+            DebugNotify(DebugCategory::kDodge, "[TD] Dodge cancelled slomo");
         }
         End();
         return;
@@ -3587,6 +3869,20 @@ void TimedDodgeState::OnDodgeEvent()
             logger::info("[TIMED DODGE] On cooldown ({}ms remaining)", remainingMs);
         }
         return;
+    }
+
+    // Damage cooldown: player took a hit too recently to timed dodge
+    if (onDamageCooldown) {
+        auto now = std::chrono::steady_clock::now();
+        if (now < damageCooldownEndTime) {
+            if (settings->bDebugLogging) {
+                auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    damageCooldownEndTime - now).count();
+                logger::info("[TIMED DODGE] Blocked by damage cooldown ({}ms remaining)", remainingMs);
+            }
+            return;
+        }
+        onDamageCooldown = false;
     }
     
     auto* player = RE::PlayerCharacter::GetSingleton();
@@ -3665,6 +3961,7 @@ void TimedDodgeState::Start(RE::Actor* attacker)
         CounterAttackState::fromTimedDodge = true;
         CounterAttackState::fromWardTimedBlock = false;
         CounterAttackState::spellFiredDuringWindow = false;
+        CounterAttackState::rangedCounterActive = false;
         CounterAttackState::trackedSpellProjectile = {};
         CounterAttackState::projectileScanRetries = 0;
         CounterAttackState::windowEndTime = now + std::chrono::milliseconds(
@@ -3696,7 +3993,7 @@ void TimedDodgeState::Start(RE::Actor* attacker)
         logger::info("[TIMED DODGE] Started: slomo={}s@{}%, iframes={}, blur={}, counter={}",
             settings->fTimedDodgeSlomoDuration, settings->fTimedDodgeSlomoSpeed * 100.0f,
             settings->bTimedDodgeIframes, settings->bTimedDodgeRadialBlur, settings->bTimedDodgeCounterAttack);
-        RE::DebugNotification("[TD] Timed Dodge!");
+        DebugNotify(DebugCategory::kDodge, "[TD] Timed Dodge!");
     }
 }
 
@@ -3914,6 +4211,21 @@ void TimedDodgeState::StartCooldown()
     
     if (settings->bDebugLogging) {
         logger::info("[TIMED DODGE] Cooldown started ({:.1f}s)", settings->fTimedDodgeCooldown);
+    }
+}
+
+void TimedDodgeState::OnPlayerDamaged()
+{
+    auto* settings = Settings::GetSingleton();
+    if (settings->fTimedDodgeDamageCooldown <= 0.0f) return;
+
+    onDamageCooldown = true;
+    damageCooldownEndTime = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(static_cast<long long>(settings->fTimedDodgeDamageCooldown * 1000.0f));
+
+    if (settings->bDebugLogging) {
+        logger::info("[TIMED DODGE] Damage cooldown started ({:.1f}s)", settings->fTimedDodgeDamageCooldown);
+        DebugNotify(DebugCategory::kDodge, "[TD] Damage cooldown!");
     }
 }
 

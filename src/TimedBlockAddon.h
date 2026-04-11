@@ -214,11 +214,20 @@ namespace CounterAttackState
     inline RE::EffectSetting* counterMGEF{ nullptr };
     inline RE::SpellItem* counterSpell{ nullptr };
 
+    // Ranged counter (bow/crossbow from timed dodge)
+    inline bool rangedCounterActive{ false };
+    inline RE::EffectSetting* drawSpeedMGEF{ nullptr };
+    inline RE::SpellItem* drawSpeedSpell{ nullptr };
+
     bool CreateCounterDamageForms();
+    bool CreateDrawSpeedForms();
 
     void StartWindow(RE::Actor* attacker = nullptr);
     void StartWardWindow(RE::Actor* attacker = nullptr);
     void OnSpellFired();
+    void OnRangedCounterInput();
+    void ApplyDrawSpeedBuff();
+    void RemoveDrawSpeedBuff();
     void Update();
     bool IsInWindow();
     void OnAttackInput();
@@ -379,9 +388,13 @@ namespace TimedDodgeState
     inline std::chrono::steady_clock::time_point effectStartTime;
     inline std::chrono::steady_clock::time_point effectEndTime;
     
-    // Cooldown
+    // Dodge cooldown (per-dodge rate-limit)
     inline bool onCooldown{ false };
     inline std::chrono::steady_clock::time_point cooldownEndTime;
+
+    // Damage cooldown (cannot timed-dodge while recently hit)
+    inline bool onDamageCooldown{ false };
+    inline std::chrono::steady_clock::time_point damageCooldownEndTime;
 
     // Early dodge forgiveness buffer
     inline bool pendingDodge{ false };
@@ -431,6 +444,9 @@ namespace TimedDodgeState
     // Cooldown management
     bool IsOnCooldown();
     void StartCooldown();
+
+    // Damage cooldown: called whenever the player takes a real hit
+    void OnPlayerDamaged();
     
     // Called when the player is hit during i-frames (restores health)
     void OnPlayerHit(RE::Actor* player);
